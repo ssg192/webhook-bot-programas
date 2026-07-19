@@ -76,13 +76,28 @@ public class YtDlpDownloader {
 
         Process p = new ProcessBuilder(cmd).redirectErrorStream(false).start();
 
-        String stdout = new String(p.getInputStream().readAllBytes());
-        String stderr = new String(p.getErrorStream().readAllBytes());
+        // Leemos stdout y stderr en hilos separados y en paralelo: si se lee uno
+        // completo antes de tocar el otro, el buffer del que no se lee se llena
+        // (más ahora con --verbose) y el proceso se cuelga esperando que alguien
+        // lo vacíe, mientras Java espera algo que nunca llega (deadlock clásico).
+        var stdoutBuf = new StringBuilder();
+        var stderrBuf = new StringBuilder();
+        Thread outT = new Thread(() -> drain(p.getInputStream(), stdoutBuf));
+        Thread errT = new Thread(() -> drain(p.getErrorStream(), stderrBuf));
+        outT.start();
+        errT.start();
 
-        if (!p.waitFor(10, TimeUnit.MINUTES)) {
+        boolean finished = p.waitFor(10, TimeUnit.MINUTES);
+        outT.join(5000);
+        errT.join(5000);
+
+        if (!finished) {
             p.destroyForcibly();
             throw new IOException("yt-dlp timeout con " + url);
         }
+
+        String stdout = stdoutBuf.toString();
+        String stderr = stderrBuf.toString();
 
         System.out.println("[YtDlpDownloader] --- stdout ---\n" + stdout);
         System.out.println("[YtDlpDownloader] --- stderr ---\n" + stderr);
@@ -101,6 +116,14 @@ public class YtDlpDownloader {
     private static String lastLine(String s) {
         String[] lines = s.strip().split("\n");
         return lines.length == 0 ? "" : lines[lines.length - 1];
+    }
+
+    private static void drain(java.io.InputStream in, StringBuilder out) {
+        try {
+            out.append(new String(in.readAllBytes()));
+        } catch (IOException e) {
+            out.append("[error leyendo stream: ").append(e.getMessage()).append("]");
+        }
     }
 
     /**
