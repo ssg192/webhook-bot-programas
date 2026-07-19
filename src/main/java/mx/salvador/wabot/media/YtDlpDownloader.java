@@ -18,6 +18,9 @@ import java.util.regex.Pattern;
 @ApplicationScoped
 public class YtDlpDownloader {
 
+    private static final String P_FILE = "@@FILE::";
+    private static final String P_TITLE = "@@TITLE::";
+
     private static final Pattern YT_URL = Pattern.compile(
             "https?://(?:www\\.|music\\.)?(?:youtube\\.com/(?:watch\\?\\S*v=|shorts/)|youtu\\.be/)[\\w\\-]{6,}\\S*");
 
@@ -53,14 +56,19 @@ public class YtDlpDownloader {
 
                 "--extractor-args", "youtube:player_client=android",
 
-                "--progress",
-                "--newline",
+                // Velocidad: baja fragmentos DASH/HLS en paralelo (clave con proxy residencial)
+                "--concurrent-fragments", "8",
+                // Resiliencia: los proxies residenciales cortan conexiones seguido
+                "--retries", "10",
+                "--fragment-retries", "10",
+                "--socket-timeout", "20",
 
                 "-o", tmpDir + "/%(title)s.%(ext)s",
-                "--print", "after_move:filepath",
-                "--print", "after_move:title",
-                "--no-simulate",
-                "--verbose"
+                // Prefijos únicos: el orden/contenido de stdout NO es confiable
+                // (yt-dlp puede intercalar lineas [download], warnings, etc.)
+                "--print", "after_move:" + P_FILE + "%(filepath)s",
+                "--print", "after_move:" + P_TITLE + "%(title)s",
+                "--no-simulate"
         ));
 
         String writableCookies = resolveWritableCookies();
@@ -118,14 +126,32 @@ public class YtDlpDownloader {
         if (p.exitValue() != 0) {
             throw new IOException("yt-dlp falló (" + p.exitValue() + ")\n\nSTDERR:\n" + stderr);        }
 
-        String[] lines = stdout.strip().split("\n");
+        String filepath = null;
+        String titulo = null;
 
-        if (lines.length < 2) {
-            throw new IOException("yt-dlp no regresó filepath/título: " + stdout);
+        for (String line : stdout.split("\n")) {
+            String l = line.strip();
+            if (l.startsWith(P_FILE)) {
+                filepath = l.substring(P_FILE.length()).strip();
+            } else if (l.startsWith(P_TITLE)) {
+                titulo = l.substring(P_TITLE.length()).strip();
+            }
         }
 
-        Path archivo = Path.of(lines[0].strip());
-        String titulo = lines[1].strip();
+        if (filepath == null || filepath.isBlank()) {
+            throw new IOException("yt-dlp no regresó filepath.\nSTDOUT:\n" + stdout
+                    + "\nSTDERR:\n" + lastLine(stderr));
+        }
+        if (titulo == null || titulo.isBlank()) {
+            titulo = Path.of(filepath).getFileName().toString();
+        }
+
+        Path archivo = Path.of(filepath);
+
+        if (!Files.exists(archivo)) {
+            throw new IOException("yt-dlp reportó el archivo pero no existe: " + archivo
+                    + "\nSTDERR:\n" + lastLine(stderr));
+        }
 
         long bytes = Files.size(archivo);
 
