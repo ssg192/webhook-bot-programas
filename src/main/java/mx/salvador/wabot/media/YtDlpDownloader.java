@@ -26,6 +26,11 @@ public class YtDlpDownloader {
     @ConfigProperty(name = "yt.cookies-file", defaultValue = "/etc/secrets/cookies.txt")
     String cookiesFile;
 
+    // Proxy residencial opcional, ej: http://usuario:password@proxy.iproyal.com:12321
+    // Si no se define esta variable, yt-dlp corre sin proxy (comportamiento normal).
+    @ConfigProperty(name = "yt.proxy-url", defaultValue = "")
+    String proxyUrl;
+
     public record Descarga(Path archivo, String titulo) {}
 
     /** Extrae todas las URLs de YouTube de un texto. */
@@ -57,6 +62,11 @@ public class YtDlpDownloader {
         if (writableCookies != null) {
             cmd.add("--cookies");
             cmd.add(writableCookies);
+        }
+
+        if (proxyUrl != null && !proxyUrl.isBlank()) {
+            cmd.add("--proxy");
+            cmd.add(proxyUrl);
         }
 
         cmd.add(url);
