@@ -65,10 +65,13 @@ public class YtDlpDownloader {
             cmd.add(writableCookies);
         }
 
+        /*
         if (proxyUrl != null && !proxyUrl.isBlank()) {
             cmd.add("--proxy");
             cmd.add(proxyUrl);
         }
+
+         */
 
         cmd.add(url);
 
