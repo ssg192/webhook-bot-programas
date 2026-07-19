@@ -47,8 +47,6 @@ Te da una URL tipo `https://xxx.trycloudflare.com`. En Meta: **WhatsApp > Config
 
 ## 3. Setup de Google Drive (OAuth de usuario, una sola vez)
 
-El bot sube archivos **como la cuenta dueña del Drive de 2 TB**, así que la propiedad y la cuota quedan bien para siempre.
-
 1. [console.cloud.google.com](https://console.cloud.google.com) → proyecto → habilita **Google Drive API**.
 2. **APIs & Services → OAuth consent screen**: configúrala (tipo External está bien), agrega el scope de Drive, y **publícala** ("In production"). No necesitas que Google la verifique — solo tú la usas — pero si se queda en "Testing" el refresh token caduca a los 7 días.
 3. **Credentials → Create credentials → OAuth client ID → Desktop app**. Descarga el JSON como `oauth-client.json` en la raíz del proyecto.
