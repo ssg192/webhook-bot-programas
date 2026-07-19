@@ -114,8 +114,7 @@ public class YtDlpDownloader {
         Log.debug("--- stderr ---\n" + stderr);
 
         if (p.exitValue() != 0) {
-            throw new IOException("yt-dlp falló (" + p.exitValue() + "): " + lastLine(stderr));
-        }
+            throw new IOException("yt-dlp falló (" + p.exitValue() + ")\n\nSTDERR:\n" + stderr);        }
 
         String[] lines = stdout.strip().split("\n");
 
