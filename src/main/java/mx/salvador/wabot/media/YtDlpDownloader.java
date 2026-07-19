@@ -47,7 +47,7 @@ public class YtDlpDownloader {
                 "-x", "--audio-format", "mp3", "--audio-quality", "0",
                 "--no-playlist",
                 "--restrict-filenames",
-                "--extractor-args", "youtube:player_client=android,web",
+                "--extractor-args", "youtube:player_client=web,mweb,android",
                 "-o", tmpDir + "/%(title)s.%(ext)s",
                 "--print", "after_move:filepath",
                 "--print", "after_move:title",
