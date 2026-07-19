@@ -1,0 +1,9 @@
+target/
+*.class
+.env
+oauth-client.json
+.idea/
+*.iml
+.vscode/
+*.log
+.DS_Store
