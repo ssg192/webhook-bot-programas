@@ -56,7 +56,8 @@ public class YtDlpDownloader {
                 "-o", tmpDir + "/%(title)s.%(ext)s",
                 "--print", "after_move:filepath",
                 "--print", "after_move:title",
-                "--no-simulate"));
+                "--no-simulate",
+                "--verbose"));
 
         String writableCookies = resolveWritableCookies();
         if (writableCookies != null) {
@@ -71,6 +72,8 @@ public class YtDlpDownloader {
 
         cmd.add(url);
 
+        System.out.println("[YtDlpDownloader] cmd=" + cmd);
+
         Process p = new ProcessBuilder(cmd).redirectErrorStream(false).start();
 
         String stdout = new String(p.getInputStream().readAllBytes());
@@ -80,6 +83,10 @@ public class YtDlpDownloader {
             p.destroyForcibly();
             throw new IOException("yt-dlp timeout con " + url);
         }
+
+        System.out.println("[YtDlpDownloader] --- stdout ---\n" + stdout);
+        System.out.println("[YtDlpDownloader] --- stderr ---\n" + stderr);
+
         if (p.exitValue() != 0) {
             throw new IOException("yt-dlp falló (" + p.exitValue() + "): " + lastLine(stderr));
         }
