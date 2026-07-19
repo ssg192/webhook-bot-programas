@@ -50,7 +50,12 @@ public class YtDlpDownloader {
                 "--audio-quality", "0",
                 "--no-playlist",
                 "--restrict-filenames",
-                "--extractor-args", "youtube:player_client=mweb,web,android",
+
+                "--extractor-args", "youtube:player_client=android",
+
+                "--progress",
+                "--newline",
+
                 "-o", tmpDir + "/%(title)s.%(ext)s",
                 "--print", "after_move:filepath",
                 "--print", "after_move:title",
@@ -65,13 +70,10 @@ public class YtDlpDownloader {
             cmd.add(writableCookies);
         }
 
-        /*
         if (proxyUrl != null && !proxyUrl.isBlank()) {
             cmd.add("--proxy");
             cmd.add(proxyUrl);
         }
-
-         */
 
         cmd.add(url);
 
