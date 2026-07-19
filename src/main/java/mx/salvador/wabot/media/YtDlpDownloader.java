@@ -53,11 +53,10 @@ public class YtDlpDownloader {
                 "--print", "after_move:title",
                 "--no-simulate"));
 
-        boolean cookiesOk = Files.exists(Path.of(cookiesFile));
-        System.out.println("[YtDlpDownloader] cookiesFile=" + cookiesFile + " existe=" + cookiesOk);
-        if (cookiesOk) {
+        String writableCookies = resolveWritableCookies();
+        if (writableCookies != null) {
             cmd.add("--cookies");
-            cmd.add(cookiesFile);
+            cmd.add(writableCookies);
         }
 
         cmd.add(url);
@@ -85,5 +84,29 @@ public class YtDlpDownloader {
     private static String lastLine(String s) {
         String[] lines = s.strip().split("\n");
         return lines.length == 0 ? "" : lines[lines.length - 1];
+    }
+
+    /**
+     * El Secret File de Render (/etc/secrets/cookies.txt) es de solo lectura,
+     * pero yt-dlp necesita reescribirlo para refrescar la sesión. Lo copiamos
+     * una vez a tmpDir (escribible) y usamos esa copia de ahí en adelante.
+     */
+    private String resolveWritableCookies() {
+        try {
+            Path source = Path.of(cookiesFile);
+            if (!Files.exists(source)) {
+                System.out.println("[YtDlpDownloader] cookiesFile=" + cookiesFile + " no existe, se omite");
+                return null;
+            }
+            Path copy = Path.of(tmpDir, "cookies-writable.txt");
+            if (!Files.exists(copy)) {
+                Files.copy(source, copy);
+                System.out.println("[YtDlpDownloader] cookies copiadas a " + copy);
+            }
+            return copy.toString();
+        } catch (IOException e) {
+            System.out.println("[YtDlpDownloader] no se pudo preparar cookies escribibles: " + e.getMessage());
+            return null;
+        }
     }
 }
