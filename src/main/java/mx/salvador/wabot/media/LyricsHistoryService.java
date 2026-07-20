@@ -75,6 +75,17 @@ public class LyricsHistoryService {
             java.util.regex.Pattern.compile("\\s*\\(\\d+\\)\\s*$");
 
     /**
+     * CUALQUIER parentesis al final del nombre es marcador de version del
+     * equipo, no parte del titulo: "(original)", "(nueva)", "(MUJER)",
+     * "(tono A)", "(2)". Se quita completo al construir la CLAVE del indice
+     * (el nombre real del archivo se conserva en el acordeorio). Sin esto,
+     * "Tu Mirada (original).pdf" queda bajo "tu mirada original" y nunca
+     * matchea la busqueda "tu mirada".
+     */
+    private static final java.util.regex.Pattern PAREN_FINAL =
+            java.util.regex.Pattern.compile("\\s*\\([^)]*\\)\\s*$");
+
+    /**
      * Marcador de voz/genero del equipo (NO es tono musical, es a que voz
      * corresponde el arreglo). Formas observadas en el historico real:
      * "(MUJER)", "(TONO MUJER)", "(version mujer)", "VERSION MUJER",
@@ -102,6 +113,7 @@ public class LyricsHistoryService {
         do {
             prev = s;
             s = DRIVE_DUP_SUFFIX.matcher(s.strip()).replaceAll("");
+            s = PAREN_FINAL.matcher(s.strip()).replaceAll("");
             for (var p : SUFIJOS_TONO_FINAL) {
                 s = p.matcher(s.strip()).replaceAll("");
             }
@@ -300,6 +312,20 @@ public class LyricsHistoryService {
         // Guion(es) sueltos al inicio (charts mal exportados, ej. "-Te Exalto)-...")
         // no cuentan como el separador titulo/artista; se descartan primero.
         s = s.replaceFirst("^[\\s\\-)]+", "");
+
+        // Descargas web tipo "Marcos-Witt-Quiero-Levantar-Mis-Manos-La": SIN
+        // espacios y con varios guiones => los guiones SON espacios, no hay
+        // separador titulo/artista confiable. Cortar en el primer guion aqui
+        // indexaria al ARTISTA como cancion ("marcos"), que luego le gana el
+        // match a titulos cortos legitimos ("hoy"). Se conserva el nombre
+        // completo como clave: matchea por substring o no matchea, pero no miente.
+        if (!s.contains(" ") && s.chars().filter(c -> c == '-').count() >= 2) {
+            s = s.replace('-', ' ');
+            s = TONO_PATTERN.matcher(s).replaceAll(" ");
+            s = limpiarSufijos(s);
+            s = GENERO_VOZ.matcher(s).replaceAll(" ");
+            return normalizar(s);
+        }
 
         int guion = s.indexOf('-');
         if (guion > 0 && s.substring(0, guion).strip().matches("\\d+")) {
