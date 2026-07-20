@@ -44,6 +44,8 @@ public class YtDlpDownloader {
 
     public Descarga downloadMp3(String url) throws IOException, InterruptedException {
 
+        url = cleanUrl(url);
+
         Files.createDirectories(Path.of(tmpDir));
 
         var cmd = new ArrayList<String>(List.of(
@@ -62,6 +64,11 @@ public class YtDlpDownloader {
                 "--retries", "10",
                 "--fragment-retries", "10",
                 "--socket-timeout", "20",
+
+                // Progreso por linea: lo usamos para cronometrar fases (el parseo
+                // del resultado es por prefijo, asi que no estorba)
+                "--progress",
+                "--newline",
 
                 "-o", tmpDir + "/%(title)s.%(ext)s",
                 // Prefijos únicos: el orden/contenido de stdout NO es confiable
@@ -83,6 +90,7 @@ public class YtDlpDownloader {
             cmd.add(proxyUrl);
         }
 
+        cmd.add("--no-quiet"); // --print activa modo quiet; lo revertimos para ver los marcadores de fase
         cmd.add(url);
 
         Log.infof("Iniciando descarga: %s", url);
@@ -96,8 +104,9 @@ public class YtDlpDownloader {
 
         var stdoutBuf = new StringBuilder();
         var stderrBuf = new StringBuilder();
+        var fases = new PhaseClock();
 
-        Thread outT = new Thread(() -> drain(p.getInputStream(), stdoutBuf));
+        Thread outT = new Thread(() -> drainWithPhases(p.getInputStream(), stdoutBuf, fases));
         Thread errT = new Thread(() -> drain(p.getErrorStream(), stderrBuf));
 
         outT.start();
@@ -157,7 +166,6 @@ public class YtDlpDownloader {
 
         double mb = bytes / 1024d / 1024d;
         double segundos = tiempoMs / 1000d;
-        double velocidad = segundos > 0 ? mb / segundos : 0;
 
         Log.info("==========================================");
         Log.info("Descarga finalizada");
@@ -165,7 +173,7 @@ public class YtDlpDownloader {
         Log.infof("Archivo     : %s", archivo);
         Log.infof("Tamaño      : %.2f MB", mb);
         Log.infof("Tiempo      : %.2f s", segundos);
-        Log.infof("Velocidad   : %.2f MB/s", velocidad);
+        Log.infof("Desglose    : %s", fases.desglose(inicio, fin));
         Log.info("==========================================");
 
         return new Descarga(archivo, titulo);
@@ -174,6 +182,64 @@ public class YtDlpDownloader {
     private static String lastLine(String s) {
         String[] lines = s.strip().split("\n");
         return lines.length == 0 ? "" : lines[lines.length - 1];
+    }
+
+    /**
+     * Deja la URL en su forma minima (solo el video). Los parametros
+     * &list=RD..., &start_radio, &index obligan a yt-dlp a resolver la
+     * playlist/radio: peticiones extra que por el proxy cuestan segundos.
+     */
+    static String cleanUrl(String url) {
+        Matcher m = Pattern.compile("(?:youtube\\.com/watch\\?\\S*?v=|youtu\\.be/|youtube\\.com/shorts/)([\\w\\-]{6,})")
+                .matcher(url);
+        if (m.find()) {
+            return "https://www.youtube.com/watch?v=" + m.group(1);
+        }
+        return url;
+    }
+
+    /** Marca cuando arranca cada fase, segun los mensajes de yt-dlp en stdout. */
+    private static final class PhaseClock {
+        volatile Instant descargaInicio;   // primer "[download]"
+        volatile Instant conversionInicio; // primer "[ExtractAudio]"
+
+        void observar(String line) {
+            if (descargaInicio == null && line.startsWith("[download]")) {
+                descargaInicio = Instant.now();
+            } else if (conversionInicio == null && line.startsWith("[ExtractAudio]")) {
+                conversionInicio = Instant.now();
+            }
+        }
+
+        String desglose(Instant inicio, Instant fin) {
+            if (descargaInicio == null) return "sin datos de fases";
+            double extraccion = ms(inicio, descargaInicio) / 1000d;
+            if (conversionInicio == null) {
+                return String.format("extraccion %.1fs | descarga+conversion %.1fs",
+                        extraccion, ms(descargaInicio, fin) / 1000d);
+            }
+            return String.format("extraccion %.1fs | descarga %.1fs | conversion %.1fs",
+                    extraccion,
+                    ms(descargaInicio, conversionInicio) / 1000d,
+                    ms(conversionInicio, fin) / 1000d);
+        }
+
+        private static long ms(Instant a, Instant b) {
+            return Duration.between(a, b).toMillis();
+        }
+    }
+
+    /** Lee stdout linea por linea: acumula el texto y cronometra las fases. */
+    private static void drainWithPhases(java.io.InputStream in, StringBuilder out, PhaseClock fases) {
+        try (var reader = new java.io.BufferedReader(new java.io.InputStreamReader(in))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                fases.observar(line);
+                out.append(line).append('\n');
+            }
+        } catch (IOException e) {
+            out.append("[error leyendo stream: ").append(e.getMessage()).append("]");
+        }
     }
 
     private static void drain(java.io.InputStream in, StringBuilder out) {
