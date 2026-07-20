@@ -46,6 +46,13 @@ public class SongPipeline {
 
     private final ExecutorService workers = Executors.newFixedThreadPool(2);
 
+    /**
+     * Descargas de canciones en paralelo (max 3 a la vez). El 80% del tiempo
+     * por cancion es espera de red (YouTube/proxy/Drive), asi que traslaparlas
+     * reduce el tiempo total de una playlist de ~N*40s a ~max(40s..60s).
+     */
+    private final ExecutorService downloadPool = Executors.newFixedThreadPool(3);
+
     /** Dedupe de message IDs: Meta reintenta webhooks si no respondes rapido. */
     private final Set<String> seenMessageIds =
             Collections.newSetFromMap(new LinkedHashMap<String, Boolean>(512) {
@@ -120,53 +127,29 @@ public class SongPipeline {
         workers.submit(() -> process(from, urls, semitones));
     }
 
+    /** Resultado de procesar un link: etiqueta si salio bien, o la url que fallo. */
+    private record Resultado(String etiqueta, String urlFallida) {}
+
     private void process(String from, List<String> urls, int semitones) {
         try {
             var domingo = Fechas.proximoDomingo();
             var carpeta = Fechas.nombreCarpeta(domingo);
             var estructura = driveService.ensureSundayStructure(domingo);
 
+            // Lanzar todas las canciones en paralelo (limitado por downloadPool)
+            List<java.util.concurrent.Future<Resultado>> futures = new ArrayList<>();
+            for (String url : urls) {
+                futures.add(downloadPool.submit(
+                        () -> procesarUna(url, semitones, estructura)));
+            }
+
+            // Recoger en el mismo orden en que llegaron los links
             List<String> ok = new ArrayList<>();
             List<String> failed = new ArrayList<>();
-
-            for (String url : urls) {
-                Path descargado = null;
-                Path aSubir = null;
-                try {
-                    var descarga = downloader.downloadMp3(url);
-                    descargado = descarga.archivo();
-
-                    aSubir = descargado;
-                    if (semitones != 0) {
-                        aSubir = pitchShifter.shift(descargado, semitones);
-                    }
-
-                    driveService.uploadMp3(aSubir, estructura.playlistId());
-
-                    // Version con tono: la original y variantes previas van a papelera
-                    if (semitones != 0) {
-                        String base = stripMp3(descargado.getFileName().toString());
-                        var quitadas = driveService.trashVariants(
-                                estructura.playlistId(), base, aSubir.getFileName().toString());
-                        if (!quitadas.isEmpty()) {
-                            LOG.infof("A papelera por cambio de tono: %s", quitadas);
-                        }
-                    }
-
-                    String etiqueta = semitones == 0
-                            ? descarga.titulo()
-                            : "%s (%s%d)".formatted(descarga.titulo(),
-                            semitones > 0 ? "+" : "", semitones);
-                    ok.add(etiqueta);
-                } catch (Exception e) {
-                    LOG.errorf(e, "Fallo con %s", url);
-                    failed.add(url);
-                } finally {
-                    deleteQuietly(descargado);
-                    if (aSubir != null && !aSubir.equals(descargado)) {
-                        deleteQuietly(aSubir);
-                    }
-                }
+            for (var f : futures) {
+                Resultado r = f.get();
+                if (r.etiqueta() != null) ok.add(r.etiqueta());
+                else failed.add(r.urlFallida());
             }
 
             var sb = new StringBuilder();
@@ -405,6 +388,48 @@ public class SongPipeline {
         } catch (Exception e) {
             LOG.error("Error copiando nota elegida", e);
             whatsApp.replyText(from, "No pude copiar: " + e.getMessage());
+        }
+    }
+
+    /** Baja, ajusta tono y sube UNA cancion. Corre en downloadPool. */
+    private Resultado procesarUna(String url, int semitones,
+                                  DriveService.EstructuraDomingo estructura) {
+        Path descargado = null;
+        Path aSubir = null;
+        try {
+            var descarga = downloader.downloadMp3(url);
+            descargado = descarga.archivo();
+
+            aSubir = descargado;
+            if (semitones != 0) {
+                aSubir = pitchShifter.shift(descargado, semitones);
+            }
+
+            driveService.uploadMp3(aSubir, estructura.playlistId());
+
+            // Version con tono: la original y variantes previas van a papelera
+            if (semitones != 0) {
+                String base = stripMp3(descargado.getFileName().toString());
+                var quitadas = driveService.trashVariants(
+                        estructura.playlistId(), base, aSubir.getFileName().toString());
+                if (!quitadas.isEmpty()) {
+                    LOG.infof("A papelera por cambio de tono: %s", quitadas);
+                }
+            }
+
+            String etiqueta = semitones == 0
+                    ? descarga.titulo()
+                    : "%s (%s%d)".formatted(descarga.titulo(),
+                    semitones > 0 ? "+" : "", semitones);
+            return new Resultado(etiqueta, null);
+        } catch (Exception e) {
+            LOG.errorf(e, "Fallo con %s", url);
+            return new Resultado(null, url);
+        } finally {
+            deleteQuietly(descargado);
+            if (aSubir != null && !aSubir.equals(descargado)) {
+                deleteQuietly(aSubir);
+            }
         }
     }
 
