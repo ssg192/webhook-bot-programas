@@ -51,15 +51,17 @@ public class YtDlpDownloader {
         var cmd = new ArrayList<String>(List.of(
                 "yt-dlp",
                 // Preferir el AAC/m4a nativo de YouTube: -x solo re-empaqueta el
-                // contenedor (~1s) en vez de re-codificar a mp3 (~30s de ffmpeg).
-                // Re-codificar no gana calidad: la fuente ya es ~128k.
-                "-f", "bestaudio[ext=m4a]/bestaudio",
+                // contenedor (~1s). Fallback /best: si YouTube esconde los formatos
+                // de solo-audio (experimento SABR), baja el video y extrae el audio.
+                "-f", "bestaudio[ext=m4a]/bestaudio/best",
                 "-x",
                 "--audio-format", "m4a",
                 "--no-playlist",
                 "--restrict-filenames",
 
-                "--extractor-args", "youtube:player_client=android",
+                // OJO: sin player_client forzado. Los defaults de yt-dlp se curan en
+                // cada release para esquivar experimentos de YouTube (p. ej. SABR);
+                // fijar "android" nos dejo sin formatos. Mantener yt-dlp actualizado.
 
                 // Velocidad: baja fragmentos DASH/HLS en paralelo (clave con proxy residencial)
                 "--concurrent-fragments", "8",
