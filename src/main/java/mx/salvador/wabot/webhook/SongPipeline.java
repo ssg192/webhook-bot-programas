@@ -44,14 +44,26 @@ public class SongPipeline {
     @ConfigProperty(name = "bot.allowed-numbers")
     Optional<List<String>> allowedNumbers;
 
+    /**
+     * Descargas simultaneas. Regla practica: ~1 por cada 0.5 vCPU del server
+     * (cada descarga es yt-dlp + deno + ffmpeg). Env var: DOWNLOAD_CONCURRENCY.
+     */
+    @ConfigProperty(name = "bot.download-concurrency", defaultValue = "2")
+    int downloadConcurrency;
+
     private final ExecutorService workers = Executors.newFixedThreadPool(2);
 
     /**
-     * Descargas de canciones en paralelo (max 3 a la vez). El 80% del tiempo
-     * por cancion es espera de red (YouTube/proxy/Drive), asi que traslaparlas
-     * reduce el tiempo total de una playlist de ~N*40s a ~max(40s..60s).
+     * Descargas de canciones en paralelo. El 80% del tiempo por cancion es
+     * espera de red (YouTube/proxy/Drive), asi que traslaparlas reduce el
+     * tiempo total de una playlist de ~N*40s a ~max(40s..60s).
      */
-    private final ExecutorService downloadPool = Executors.newFixedThreadPool(3);
+    private ExecutorService downloadPool;
+
+    @jakarta.annotation.PostConstruct
+    void init() {
+        downloadPool = Executors.newFixedThreadPool(Math.max(1, downloadConcurrency));
+    }
 
     /** Dedupe de message IDs: Meta reintenta webhooks si no respondes rapido. */
     private final Set<String> seenMessageIds =
@@ -113,7 +125,10 @@ public class SongPipeline {
             return;
         }
 
-        List<String> urls = downloader.extractYouTubeUrls(body);
+        List<String> urls = downloader.extractYouTubeUrls(body).stream()
+                .map(YtDlpDownloader::cleanUrl)
+                .distinct()
+                .toList();
         if (urls.isEmpty()) return;
 
         final int semitones = pitchShifter.parseSemitones(body);
@@ -429,6 +444,10 @@ public class SongPipeline {
             deleteQuietly(descargado);
             if (aSubir != null && !aSubir.equals(descargado)) {
                 deleteQuietly(aSubir);
+            }
+            // Cada descarga vive en su subdirectorio unico; borrarlo al terminar
+            if (descargado != null) {
+                deleteQuietly(descargado.getParent());
             }
         }
     }

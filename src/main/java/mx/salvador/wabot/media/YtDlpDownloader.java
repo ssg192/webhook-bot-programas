@@ -30,8 +30,25 @@ public class YtDlpDownloader {
     @ConfigProperty(name = "yt.cookies-file", defaultValue = "/etc/secrets/cookies.txt")
     String cookiesFile;
 
+    /**
+     * Alternativa al archivo: contenido de cookies.txt en base64 (para
+     * plataformas sin secret files, como Railway). Env var: YT_COOKIES_B64.
+     * Si esta presente, tiene prioridad sobre yt.cookies-file.
+     */
+    @ConfigProperty(name = "yt.cookies-b64", defaultValue = "")
+    String cookiesB64;
+
     @ConfigProperty(name = "yt.proxy-url", defaultValue = "")
     String proxyUrl;
+
+    /**
+     * Cliente(s) de YouTube a forzar, ej. "tv" o "tv,web_safari".
+     * Vacio = defaults de yt-dlp (mas lento pero mas robusto).
+     * Configurable por env var YT_PLAYER_CLIENT para poder cambiarlo
+     * sin redeploy cuando YouTube rompa alguno.
+     */
+    @ConfigProperty(name = "yt.player-client", defaultValue = "")
+    String playerClient;
 
     public record Descarga(Path archivo, String titulo) {
     }
@@ -46,7 +63,10 @@ public class YtDlpDownloader {
 
         url = cleanUrl(url);
 
-        Files.createDirectories(Path.of(tmpDir));
+        // Subdirectorio unico por descarga: dos hilos bajando el mismo video
+        // no deben compartir el mismo .part (uno lo renombra y el otro truena)
+        Path workDir = Path.of(tmpDir, "dl-" + java.util.UUID.randomUUID().toString().substring(0, 8));
+        Files.createDirectories(workDir);
 
         var cmd = new ArrayList<String>(List.of(
                 "yt-dlp",
@@ -75,13 +95,18 @@ public class YtDlpDownloader {
                 "--progress",
                 "--newline",
 
-                "-o", tmpDir + "/%(title)s.%(ext)s",
+                "-o", workDir + "/%(title)s.%(ext)s",
                 // Prefijos únicos: el orden/contenido de stdout NO es confiable
                 // (yt-dlp puede intercalar lineas [download], warnings, etc.)
                 "--print", "after_move:" + P_FILE + "%(filepath)s",
                 "--print", "after_move:" + P_TITLE + "%(title)s",
                 "--no-simulate"
         ));
+
+        if (playerClient != null && !playerClient.isBlank()) {
+            cmd.add("--extractor-args");
+            cmd.add("youtube:player_client=" + playerClient.strip());
+        }
 
         String writableCookies = resolveWritableCookies();
 
@@ -100,6 +125,16 @@ public class YtDlpDownloader {
 
         Log.infof("Iniciando descarga: %s", url);
         Log.debugf("Comando: %s", cmd);
+
+        try {
+            return ejecutar(cmd, url);
+        } catch (IOException | InterruptedException | RuntimeException e) {
+            borrarDirQuietly(workDir); // no dejar basura de descargas fallidas
+            throw e;
+        }
+    }
+
+    private Descarga ejecutar(List<String> cmd, String url) throws IOException, InterruptedException {
 
         Instant inicio = Instant.now();
 
@@ -194,13 +229,20 @@ public class YtDlpDownloader {
      * &list=RD..., &start_radio, &index obligan a yt-dlp a resolver la
      * playlist/radio: peticiones extra que por el proxy cuestan segundos.
      */
-    static String cleanUrl(String url) {
+    public static String cleanUrl(String url) {
         Matcher m = Pattern.compile("(?:youtube\\.com/watch\\?\\S*?v=|youtu\\.be/|youtube\\.com/shorts/)([\\w\\-]{6,})")
                 .matcher(url);
         if (m.find()) {
             return "https://www.youtube.com/watch?v=" + m.group(1);
         }
         return url;
+    }
+
+    private static void borrarDirQuietly(Path dir) {
+        try (var stream = Files.list(dir)) {
+            stream.forEach(p -> { try { Files.deleteIfExists(p); } catch (IOException ignored) {} });
+        } catch (IOException ignored) {}
+        try { Files.deleteIfExists(dir); } catch (IOException ignored) {}
     }
 
     /** Marca cuando arranca cada fase, segun los mensajes de yt-dlp en stdout. */
@@ -259,14 +301,26 @@ public class YtDlpDownloader {
 
         try {
 
+            Path copy = Path.of(tmpDir, "cookies-writable.txt");
+
+            // Opcion 1: cookies en variable de entorno (base64) — Railway y similares
+            if (cookiesB64 != null && !cookiesB64.isBlank()) {
+                if (!Files.exists(copy)) {
+                    byte[] decoded = java.util.Base64.getDecoder()
+                            .decode(cookiesB64.strip().replaceAll("\\s", ""));
+                    Files.write(copy, decoded);
+                    Log.infof("Cookies (b64) escritas a %s", copy);
+                }
+                return copy.toString();
+            }
+
+            // Opcion 2: archivo de secrets — Render y similares
             Path source = Path.of(cookiesFile);
 
             if (!Files.exists(source)) {
                 Log.infof("No existe archivo de cookies: %s", cookiesFile);
                 return null;
             }
-
-            Path copy = Path.of(tmpDir, "cookies-writable.txt");
 
             if (!Files.exists(copy)) {
                 Files.copy(source, copy);
@@ -275,7 +329,7 @@ public class YtDlpDownloader {
 
             return copy.toString();
 
-        } catch (IOException e) {
+        } catch (Exception e) {
 
             Log.warnf("No se pudieron preparar las cookies: %s", e.getMessage());
             return null;
