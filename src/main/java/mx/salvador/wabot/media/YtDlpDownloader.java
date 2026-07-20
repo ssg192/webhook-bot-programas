@@ -41,15 +41,6 @@ public class YtDlpDownloader {
     @ConfigProperty(name = "yt.proxy-url", defaultValue = "")
     String proxyUrl;
 
-    /**
-     * Cliente(s) de YouTube a forzar, ej. "tv" o "tv,web_safari".
-     * Vacio = defaults de yt-dlp (mas lento pero mas robusto).
-     * Configurable por env var YT_PLAYER_CLIENT para poder cambiarlo
-     * sin redeploy cuando YouTube rompa alguno.
-     */
-    @ConfigProperty(name = "yt.player-client", defaultValue = "")
-    String playerClient;
-
     public record Descarga(Path archivo, String titulo) {
     }
 
@@ -102,11 +93,6 @@ public class YtDlpDownloader {
                 "--print", "after_move:" + P_TITLE + "%(title)s",
                 "--no-simulate"
         ));
-
-        if (playerClient != null && !playerClient.isBlank()) {
-            cmd.add("--extractor-args");
-            cmd.add("youtube:player_client=" + playerClient.strip());
-        }
 
         String writableCookies = resolveWritableCookies();
 
