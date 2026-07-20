@@ -6,8 +6,6 @@ import java.util.regex.Pattern;
 
 /**
  * Limpia nombres de archivo/título de YouTube para usarlos en el doc de letras:
- * "Cristian_Castro_-_Lloviendo_Estrellas_Cover_Audio (-2).mp3"
- *   -> nombre: "Cristian Castro - Lloviendo Estrellas", tono: "-2"
  */
 public final class TitleCleaner {
 
@@ -30,7 +28,8 @@ public final class TitleCleaner {
 
     public static Titulo clean(String fileName) {
         String s = fileName;
-        if (s.endsWith(".mp3")) s = s.substring(0, s.length() - 4);
+        String lower = s.toLowerCase();
+        if (lower.endsWith(".mp3") || lower.endsWith(".m4a")) s = s.substring(0, s.length() - 4);
 
         // Extraer sufijo de tono "(-2)" si existe (lo agregamos nosotros, se preserva)
         String tono = null;

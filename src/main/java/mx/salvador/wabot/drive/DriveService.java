@@ -87,7 +87,7 @@ public class DriveService {
         }
     }
 
-    /** Sube el mp3; si ya existe uno con el mismo nombre, no lo duplica. */
+    /** Sube el audio (m4a o mp3); si ya existe uno con el mismo nombre, no lo duplica. */
     public File uploadMp3(Path localFile, String parentId) throws Exception {
         String name = localFile.getFileName().toString();
 
@@ -96,8 +96,9 @@ public class DriveService {
             return existing;
         }
 
+        String mime = name.toLowerCase().endsWith(".mp3") ? "audio/mpeg" : "audio/mp4";
         File metadata = new File().setName(name).setParents(List.of(parentId));
-        FileContent content = new FileContent("audio/mpeg", localFile.toFile());
+        FileContent content = new FileContent(mime, localFile.toFile());
         return drive.files().create(metadata, content)
                 .setSupportsAllDrives(true)
                 .setFields("id, name, webViewLink")
@@ -145,6 +146,11 @@ public class DriveService {
                 .execute();
     }
 
+    private static boolean esAudio(String name) {
+        String n = name.toLowerCase();
+        return n.endsWith(".m4a") || n.endsWith(".mp3");
+    }
+
     /** Busca un archivo por nombre exacto dentro de una carpeta; null si no existe. */
     public File findFile(String name, String parentId) throws Exception {
         FileList list = drive.files().list()
@@ -157,7 +163,7 @@ public class DriveService {
         return list.getFiles().isEmpty() ? null : list.getFiles().get(0);
     }
 
-    /** Nombres de todos los mp3 de una carpeta (para contar canciones y armar el docx). */
+    /** Nombres de todos los audios (m4a/mp3) de una carpeta (para contar canciones y armar el docx). */
     public List<String> listMp3Names(String parentId) throws Exception {
         FileList list = drive.files().list()
                 .setQ("'%s' in parents and trashed = false".formatted(parentId))
@@ -168,7 +174,7 @@ public class DriveService {
                 .execute();
         List<String> names = new ArrayList<>();
         for (File f : list.getFiles()) {
-            if (f.getName().endsWith(".mp3")) {
+            if (esAudio(f.getName())) {
                 names.add(f.getName());
             }
         }
@@ -177,7 +183,7 @@ public class DriveService {
 
     /**
      * Manda a la papelera todas las variantes de una cancion en la carpeta:
-     * "Base.mp3", "Base (-2).mp3", etc., excepto la recien subida (exceptName).
+     * "Base.m4a", "Base (-2).m4a" (o .mp3), etc., excepto la recien subida (exceptName).
      */
     public List<String> trashVariants(String parentId, String baseName, String exceptName) throws Exception {
         FileList list = drive.files().list()
@@ -190,8 +196,9 @@ public class DriveService {
         List<String> trashed = new ArrayList<>();
         for (File f : list.getFiles()) {
             String n = f.getName();
-            boolean esVariante = n.endsWith(".mp3")
-                    && (n.equals(baseName + ".mp3") || n.startsWith(baseName + " ("));
+            boolean esVariante = esAudio(n)
+                    && (n.equals(baseName + ".m4a") || n.equals(baseName + ".mp3")
+                    || n.startsWith(baseName + " ("));
             if (esVariante && !n.equals(exceptName)) {
                 drive.files().update(f.getId(), new File().setTrashed(true))
                         .setSupportsAllDrives(true)

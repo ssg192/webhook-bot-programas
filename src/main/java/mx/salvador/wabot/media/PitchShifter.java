@@ -30,36 +30,41 @@ public class PitchShifter {
     }
 
     /**
-     * Genera un archivo nuevo con el tono cambiado: "Cancion (-2).mp3".
-     * Bloqueante — llamar desde un hilo worker.
+     * Genera un archivo nuevo con el tono cambiado: "Cancion (-2).m4a".
+     * Conserva la extensión del original. Bloqueante — llamar desde un hilo worker.
      */
     public Path shift(Path input, int semitones) throws IOException, InterruptedException {
         double factor = Math.pow(2, semitones / 12.0);
         String name = input.getFileName().toString();
-        String base = name.endsWith(".mp3") ? name.substring(0, name.length() - 4) : name;
+        int dot = name.lastIndexOf('.');
+        String base = dot > 0 ? name.substring(0, dot) : name;
+        String ext = dot > 0 ? name.substring(dot) : ".m4a";
         String signed = (semitones > 0 ? "+" : "") + semitones;
-        Path output = input.resolveSibling(base + " (" + signed + ").mp3");
+        Path output = input.resolveSibling(base + " (" + signed + ")" + ext);
+
+        // Codec según contenedor: aac para .m4a, lame para .mp3 (archivos viejos)
+        String codec = ext.equalsIgnoreCase(".mp3") ? "libmp3lame" : "aac";
 
         // Intento 1: rubberband (preserva mejor la voz)
         String rubberband = String.format("rubberband=pitch=%.6f", factor);
-        if (runFfmpeg(input, output, rubberband)) {
+        if (runFfmpeg(input, output, rubberband, codec)) {
             return output;
         }
 
         // Fallback: asetrate + aresample + atempo (ffmpeg sin librubberband)
         String fallback = String.format(
                 "asetrate=44100*%.6f,aresample=44100,atempo=%.6f", factor, 1.0 / factor);
-        if (runFfmpeg(input, output, fallback)) {
+        if (runFfmpeg(input, output, fallback, codec)) {
             return output;
         }
 
         throw new IOException("ffmpeg no pudo cambiar el tono (ni rubberband ni fallback)");
     }
 
-    private boolean runFfmpeg(Path in, Path out, String audioFilter)
+    private boolean runFfmpeg(Path in, Path out, String audioFilter, String codec)
             throws IOException, InterruptedException {
         var cmd = List.of("ffmpeg", "-y", "-i", in.toString(),
-                "-af", audioFilter, "-codec:a", "libmp3lame", "-q:a", "2",
+                "-af", audioFilter, "-codec:a", codec, "-b:a", "192k",
                 out.toString());
         Process p = new ProcessBuilder(cmd).redirectErrorStream(true).start();
         p.getInputStream().readAllBytes(); // drenar para que no se bloquee

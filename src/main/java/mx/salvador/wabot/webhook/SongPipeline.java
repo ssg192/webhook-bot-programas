@@ -409,7 +409,11 @@ public class SongPipeline {
     }
 
     private static String stripMp3(String name) {
-        return name.endsWith(".mp3") ? name.substring(0, name.length() - 4) : name;
+        String n = name.toLowerCase();
+        if (n.endsWith(".mp3") || n.endsWith(".m4a")) {
+            return name.substring(0, name.length() - 4);
+        }
+        return name;
     }
 
     private static void deleteQuietly(Path p) {

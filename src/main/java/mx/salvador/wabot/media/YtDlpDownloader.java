@@ -50,9 +50,12 @@ public class YtDlpDownloader {
 
         var cmd = new ArrayList<String>(List.of(
                 "yt-dlp",
+                // Preferir el AAC/m4a nativo de YouTube: -x solo re-empaqueta el
+                // contenedor (~1s) en vez de re-codificar a mp3 (~30s de ffmpeg).
+                // Re-codificar no gana calidad: la fuente ya es ~128k.
+                "-f", "bestaudio[ext=m4a]/bestaudio",
                 "-x",
-                "--audio-format", "mp3",
-                "--audio-quality", "0",
+                "--audio-format", "m4a",
                 "--no-playlist",
                 "--restrict-filenames",
 
