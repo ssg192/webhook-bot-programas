@@ -327,18 +327,35 @@ public class DriveService {
         return out.toByteArray();
     }
 
+    /**
+     * Busca la carpeta comparando el nombre NORMALIZADO (ver norm()): tolera espacios
+     * sobrantes, acentos y mayusculas. El equipo crea carpetas como "Julio " con espacio
+     * al final, y un "name = 'Julio'" exacto no las encontraba -> duplicados.
+     * Si varias empatan, gana la mas antigua (setOrderBy createdTime).
+     */
     private String findOrCreateFolder(String name, String parentId) throws Exception {
-        FileList list = drive.files().list()
-                .setQ("name = '%s' and mimeType = '%s' and '%s' in parents and trashed = false"
-                        .formatted(escape(name), FOLDER_MIME, parentId))
-                .setFields("files(id)")
-                .setOrderBy("createdTime")
-                .setSupportsAllDrives(true)
-                .setIncludeItemsFromAllDrives(true)
-                .execute();
-        if (!list.getFiles().isEmpty()) {
-            return list.getFiles().get(0).getId();
-        }
+        String buscado = norm(name);
+        String pageToken = null;
+
+        do {
+            FileList list = drive.files().list()
+                    .setQ("mimeType = '%s' and '%s' in parents and trashed = false"
+                            .formatted(FOLDER_MIME, parentId))
+                    .setFields("nextPageToken, files(id, name)")
+                    .setPageSize(200)
+                    .setPageToken(pageToken)
+                    .setOrderBy("createdTime")
+                    .setSupportsAllDrives(true)
+                    .setIncludeItemsFromAllDrives(true)
+                    .execute();
+
+            for (File f : list.getFiles()) {
+                if (norm(f.getName()).equals(buscado)) {
+                    return f.getId();
+                }
+            }
+            pageToken = list.getNextPageToken();
+        } while (pageToken != null);
 
         File folder = new File()
                 .setName(name)
@@ -353,5 +370,21 @@ public class DriveService {
 
     private static String escape(String s) {
         return s.replace("'", "\\'");
+    }
+
+    /**
+     * Normaliza nombres de carpeta para comparar. Tolera lo que la gente escribe a mano:
+     * acentos de mas/de menos, espacios sobrantes al inicio/final, espacios dobles en
+     * medio, espacio duro (nbsp) al copiar de web, mayusculas y distinta codificacion
+     * Unicode (Mac usa NFD, Windows NFC).
+     * NO tolera typos ("Jullio") ni otro formato ("26 Julio 2026" vs "26 de Julio 2026").
+     */
+    private static String norm(String s) {
+        return java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "")        // quita acentos ya separados por NFD
+                .replace('\u00A0', ' ')          // nbsp -> espacio normal
+                .replaceAll("\\s+", " ")         // colapsa espacios internos
+                .strip()
+                .toLowerCase(java.util.Locale.ROOT);
     }
 }
