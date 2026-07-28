@@ -4,7 +4,7 @@ Bot que recibe links de YouTube por WhatsApp, los convierte a MP3 con `yt-dlp` y
 
 ```
 <Carpeta raíz>/
-└── Domingo 2026-07-19/
+└── nombre-carpeta/
     ├── Playlist/      ← mp3s
     └── Notas/
 ```
@@ -18,10 +18,6 @@ Usa la **WhatsApp Business Cloud API oficial de Meta**
 - **Para pruebas**: Meta da un número de prueba gratis con hasta 5 destinatarios registrados — perfecto para arrancar.
 - **Costo**: conversaciones iniciadas por el usuario (te mandan link → respondes en <24h) son gratis. Tu flujo completo cae ahí.
 
-## Requisitos
-
-- Java 21, Maven
-- `yt-dlp` y `ffmpeg`: `brew install yt-dlp ffmpeg`
 
 ## 1. Setup en Meta (una vez)
 
@@ -50,7 +46,7 @@ Te da una URL tipo `https://xxx.trycloudflare.com`. En Meta: **WhatsApp > Config
 1. [console.cloud.google.com](https://console.cloud.google.com) → proyecto → habilita **Google Drive API**.
 2. **APIs & Services → OAuth consent screen**: configúrala (tipo External está bien), agrega el scope de Drive, y **publícala** ("In production"). No necesitas que Google la verifique — solo tú la usas — pero si se queda en "Testing" el refresh token caduca a los 7 días.
 3. **Credentials → Create credentials → OAuth client ID → Desktop app**. Descarga el JSON como `oauth-client.json` en la raíz del proyecto.
-4. Genera el refresh token (abre el browser, **inicia sesión con la cuenta del Drive de 2 TB** y acepta):
+4. Genera el refresh token (abre el browser, **inicia sesión con la cuenta drive** y acepta):
 
    ```bash
    ./mvnw -q compile exec:java -Dexec.mainClass=mx.salvador.wabot.drive.TokenGenerator
@@ -74,7 +70,7 @@ export ALLOWED_NUMBERS=5215512345678,5215587654321   # opcional
 ./mvnw quarkus:dev
 ```
 
-Manda un WhatsApp al número del bot con uno o varios links de YouTube. El bot responde "⏳ Descargando..." y al terminar la lista de canciones + link a la carpeta del domingo.
+Manda un WhatsApp al número del bot con uno o varios links de YouTube. El bot responde "Descargando..." y al terminar la lista de canciones + link a la carpeta del domingo.
 
 ## Producción en la Mac (launchd)
 
