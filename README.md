@@ -72,6 +72,10 @@ export ALLOWED_NUMBERS=5215512345678,5215587654321   # opcional
 
 Manda un WhatsApp al número del bot con uno o varios links de YouTube. El bot responde "Descargando..." y al terminar la lista de canciones + link a la carpeta del domingo.
 
+Para copiar los acordeorios del histórico a la carpeta `Notas`, manda `notas`. Si hay
+más de una versión de una canción, el bot preguntará cuál quieres. Responde sólo
+con `version 1`, `version 2`, etc.; no hace falta repetir el nombre de la canción.
+
 ## Producción en la Mac (launchd)
 
 ```bash

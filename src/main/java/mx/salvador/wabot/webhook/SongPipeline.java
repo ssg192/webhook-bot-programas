@@ -23,7 +23,10 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @ApplicationScoped
 public class SongPipeline {
@@ -32,6 +35,8 @@ public class SongPipeline {
 
     /** Canciones tipicas de un servicio; al llegar aqui se sugiere el doc de letras. */
     private static final int SUGERIR_LETRAS_EN = 4;
+    private static final Pattern RESPUESTA_VERSION =
+            Pattern.compile("(?i)^versi[o\u00f3]n\\s+(\\d+)$");
 
     @Inject YtDlpDownloader downloader;
     @Inject PitchShifter pitchShifter;
@@ -52,6 +57,8 @@ public class SongPipeline {
     int downloadConcurrency;
 
     private final ExecutorService workers = Executors.newFixedThreadPool(2);
+    /** Canciones con versiones pendientes de elegir, por numero de WhatsApp. */
+    private final Map<String, List<String>> versionesPendientes = new ConcurrentHashMap<>();
 
     /**
      * Descargas de canciones en paralelo. El 80% del tiempo por cancion es
@@ -95,6 +102,12 @@ public class SongPipeline {
 
         String body = msg.text().body();
 
+        // Respuesta corta a la pregunta de una nota con varias versiones.
+        if (body != null && RESPUESTA_VERSION.matcher(body.strip()).matches()) {
+            workers.submit(() -> copiarVersionPendiente(from, body.strip()));
+            return;
+        }
+
         // Comando: generar el doc de letras del domingo
         if (body != null && body.strip().equalsIgnoreCase("letras")) {
             whatsApp.replyText(from, "Armando el doc de letras, busco en el historico. Dame unos segundos...");
@@ -105,7 +118,7 @@ public class SongPipeline {
         // Comando: copiar los acordeorios del historico a Notas/ del domingo.
         //   "notas"                -> todas las canciones (las de version unica se copian;
         //                             las de varias versiones piden eleccion)
-        //   "notas en ti 2"        -> copia la version 2 de "en ti"
+        //   "notas en ti version 2" -> copia la version 2 de "en ti"
         //   "notas en ti todas"    -> copia todas las versiones de "en ti"
         if (body != null && body.strip().toLowerCase().startsWith("notas")) {
             String resto = body.strip().substring(5).strip();
@@ -284,6 +297,7 @@ public class SongPipeline {
 
     private void generarNotas(String from) {
         try {
+            versionesPendientes.remove(from);
             var domingo = Fechas.proximoDomingo();
             var carpeta = Fechas.nombreCarpeta(domingo);
             var estructura = driveService.ensureSundayStructure(domingo);
@@ -312,15 +326,9 @@ public class SongPipeline {
                     driveService.copyTo(a.id, a.name, estructura.notasId());
                     copiadas.add(nombre + " \u2192 " + a.name);
                 } else {
-                    // varias versiones: NO copiar, pedir eleccion
-                    var menu = new StringBuilder("\"" + nombre + "\" tiene "
-                            + variantes.size() + " versiones — dime cual:\n");
-                    for (int i = 0; i < variantes.size(); i++) {
-                        menu.append("\u2022 notas ").append(nombre).append(' ').append(i + 1)
-                                .append(" \u2192 ").append(variantes.get(i).name).append('\n');
-                    }
-                    menu.append("\u2022 notas ").append(nombre).append(" todas");
-                    elecciones.add(menu.toString());
+                    // Varias versiones: se preguntan una por una para que la
+                    // respuesta pueda ser solo "version 1" o "version 2".
+                    elecciones.add(nombre);
                 }
             }
 
@@ -329,8 +337,13 @@ public class SongPipeline {
                 sb.append("Notas copiadas a *Notas/*:\n");
                 copiadas.forEach(c -> sb.append("\u2022 ").append(c).append('\n'));
             }
-            for (String menu : elecciones) {
-                sb.append(sb.length() > 0 ? "\n" : "").append(menu).append('\n');
+            if (!elecciones.isEmpty()) {
+                versionesPendientes.put(from, List.copyOf(elecciones));
+                sb.append(sb.length() > 0 ? "\n" : "");
+                appendPreguntaDeVersion(sb, elecciones.get(0), refs.get(elecciones.get(0)).acordeorios);
+                if (elecciones.size() > 1) {
+                    sb.append("\nCuando elijas esta, te preguntare la siguiente cancion.");
+                }
             }
             if (!sinNotas.isEmpty()) {
                 sb.append(sb.length() > 0 ? "\n" : "");
@@ -348,25 +361,87 @@ public class SongPipeline {
         }
     }
 
-    /** "en ti 2" o "en ti todas": copia la(s) version(es) elegida(s) de una cancion. */
+    /** Copia la version indicada para la cancion pendiente y, si aplica, pregunta la siguiente. */
+    private void copiarVersionPendiente(String from, String respuesta) {
+        try {
+            List<String> pendientes = versionesPendientes.get(from);
+            if (pendientes == null || pendientes.isEmpty()) {
+                whatsApp.replyText(from, "No tengo una cancion pendiente. Manda \"notas\" para buscar sus versiones.");
+                return;
+            }
+
+            Matcher matcher = RESPUESTA_VERSION.matcher(respuesta);
+            matcher.matches();
+            int seleccion = Integer.parseInt(matcher.group(1));
+            String cancion = pendientes.get(0);
+            var ref = lyricsHistory.refs(List.of(cancion)).get(cancion);
+            var variantes = ref == null
+                    ? List.<mx.salvador.wabot.media.LyricsHistoryService.Acordeorio>of()
+                    : ref.acordeorios;
+            if (seleccion < 1 || seleccion > variantes.size()) {
+                whatsApp.replyText(from, "\"" + cancion + "\" tiene " + variantes.size()
+                        + " versiones. Escribe version 1, version 2, etc.");
+                return;
+            }
+
+            var estructura = driveService.ensureSundayStructure(Fechas.proximoDomingo());
+            var elegida = variantes.get(seleccion - 1);
+            driveService.copyTo(elegida.id, elegida.name, estructura.notasId());
+
+            List<String> restantes = pendientes.subList(1, pendientes.size());
+            var sb = new StringBuilder("Copiado a *Notas/*:\n\u2022 ").append(elegida.name);
+            if (restantes.isEmpty()) {
+                versionesPendientes.remove(from);
+            } else {
+                versionesPendientes.put(from, List.copyOf(restantes));
+                String siguiente = restantes.get(0);
+                var siguienteRef = lyricsHistory.refs(List.of(siguiente)).get(siguiente);
+                if (siguienteRef != null && siguienteRef.acordeorios.size() > 1) {
+                    sb.append("\n\n");
+                    appendPreguntaDeVersion(sb, siguiente, siguienteRef.acordeorios);
+                }
+            }
+            whatsApp.replyText(from, sb.toString());
+        } catch (Exception e) {
+            LOG.error("Error copiando version pendiente", e);
+            whatsApp.replyText(from, "No pude copiar la version: " + e.getMessage());
+        }
+    }
+
+    private void appendPreguntaDeVersion(StringBuilder sb, String cancion,
+                                         List<mx.salvador.wabot.media.LyricsHistoryService.Acordeorio> variantes) {
+        sb.append("\"").append(cancion).append("\" tiene ").append(variantes.size())
+                .append(" versiones. \u00bfQue version quieres? Escribe version 1, version 2, etc.:\n");
+        for (int i = 0; i < variantes.size(); i++) {
+            sb.append("\u2022 version ").append(i + 1).append(" \u2192 ")
+                    .append(variantes.get(i).name).append('\n');
+        }
+    }
+
+    /** "en ti version 2" o "en ti todas": copia la(s) version(es) elegida(s) de una cancion. */
     private void copiarNotaElegida(String from, String consulta) {
         try {
             String[] tokens = consulta.strip().split("\\s+");
             String ultimo = tokens[tokens.length - 1].toLowerCase();
             boolean todas = ultimo.equals("todas");
             int seleccion = -1;
-            if (!todas && ultimo.matches("\\d+")) {
+            int tokensDeCancion = tokens.length - 1;
+            if (!todas && tokens.length >= 2
+                    && (tokens[tokens.length - 2].equalsIgnoreCase("version")
+                    || tokens[tokens.length - 2].equalsIgnoreCase("versi\u00f3n"))
+                    && ultimo.matches("\\d+")) {
                 seleccion = Integer.parseInt(ultimo);
+                tokensDeCancion = tokens.length - 2;
             }
             if (!todas && seleccion < 1) {
                 whatsApp.replyText(from,
-                        "No entendi la eleccion. Usa: notas <cancion> <numero> o notas <cancion> todas");
+                        "No entendi la eleccion. Usa: notas <cancion> version <numero> o notas <cancion> todas");
                 return;
             }
             String cancion = String.join(" ",
-                    java.util.Arrays.copyOfRange(tokens, 0, tokens.length - 1)).strip();
+                    java.util.Arrays.copyOfRange(tokens, 0, tokensDeCancion)).strip();
             if (cancion.isBlank()) {
-                whatsApp.replyText(from, "Falta la cancion. Ej: notas en ti 1");
+                whatsApp.replyText(from, "Falta la cancion. Ej: notas en ti version 1");
                 return;
             }
 
