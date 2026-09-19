@@ -76,6 +76,16 @@ Para copiar los acordeorios del histórico a la carpeta `Notas`, manda `notas`. 
 más de una versión de una canción, el bot preguntará cuál quieres. Responde sólo
 con `version 1`, `version 2`, etc.; no hace falta repetir el nombre de la canción.
 
+Para ajustar los audios de la playlist, escribe `bajar tono` o `subir tono`.
+El bot muestra las canciones numeradas: responde `cancion 1`, `cancion 1 3` o
+`todas`. Después te pregunta cuántos semitonos: responde `2`, por ejemplo
+(de 1 a 12). Si sólo hay una canción, pregunta directamente los semitonos.
+El ajuste se aplica al audio actual; primero sube la versión ajustada y después
+manda el archivo anterior a la papelera de Drive. Si falla el procesamiento o
+la subida, conserva el anterior. Puedes escribir `cancelar` antes de iniciar el
+procesamiento; las selecciones caducan después de 30 minutos o al reiniciar el bot.
+También sigue funcionando mandar un link de YouTube acompañado de `tono -2`.
+
 ## Producción en la Mac (launchd)
 
 ```bash

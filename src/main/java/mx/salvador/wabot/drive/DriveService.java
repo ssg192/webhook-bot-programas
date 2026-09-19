@@ -96,6 +96,12 @@ public class DriveService {
             return existing;
         }
 
+        return uploadNewAudio(localFile, name, parentId);
+    }
+
+    /** Siempre crea el audio procesado: no reutiliza un archivo por coincidir el nombre. */
+    public File uploadNewAudio(Path localFile, String name, String parentId) throws Exception {
+
         String mime = name.toLowerCase().endsWith(".mp3") ? "audio/mpeg" : "audio/mp4";
         File metadata = new File().setName(name).setParents(List.of(parentId));
         FileContent content = new FileContent(mime, localFile.toFile());
@@ -103,6 +109,48 @@ public class DriveService {
                 .setSupportsAllDrives(true)
                 .setFields("id, name, webViewLink")
                 .execute();
+    }
+
+    public record AudioFile(String id, String name, Long version) {}
+
+    /** Guarda IDs y versiones para que la numeracion del menu no cambie al responder. */
+    public List<AudioFile> listAudioFiles(String parentId) throws Exception {
+        List<AudioFile> result = new ArrayList<>();
+        String pageToken = null;
+        do {
+            FileList page = drive.files().list()
+                    .setQ("'%s' in parents and trashed = false".formatted(escape(parentId)))
+                    .setFields("nextPageToken,files(id,name,version)")
+                    .setOrderBy("name,createdTime").setPageSize(1000).setPageToken(pageToken)
+                    .setSupportsAllDrives(true).setIncludeItemsFromAllDrives(true).execute();
+            for (File file : page.getFiles()) {
+                if (esAudio(file.getName())) {
+                    result.add(new AudioFile(file.getId(), file.getName(), file.getVersion()));
+                }
+            }
+            pageToken = page.getNextPageToken();
+        } while (pageToken != null);
+        return List.copyOf(result);
+    }
+
+    public boolean audioUnchanged(AudioFile audio, String parentId) throws Exception {
+        File current = drive.files().get(audio.id()).setSupportsAllDrives(true)
+                .setFields("trashed,parents,version").execute();
+        return !Boolean.TRUE.equals(current.getTrashed())
+                && current.getParents() != null && current.getParents().contains(parentId)
+                && java.util.Objects.equals(current.getVersion(), audio.version());
+    }
+
+    /** Descarga por streaming para no cargar toda la lista de audios en memoria. */
+    public void downloadAudio(String fileId, Path destination) throws Exception {
+        try (var out = java.nio.file.Files.newOutputStream(destination)) {
+            drive.files().get(fileId).setSupportsAllDrives(true).executeMediaAndDownloadTo(out);
+        }
+    }
+
+    public void trashFile(String fileId) throws Exception {
+        drive.files().update(fileId, new File().setTrashed(true))
+                .setSupportsAllDrives(true).execute();
     }
 
     /** Sube un archivo desde bytes (p. ej. el docx de letras). */

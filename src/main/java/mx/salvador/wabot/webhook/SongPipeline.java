@@ -44,6 +44,7 @@ public class SongPipeline {
     @Inject LyricsDocxService lyricsDocx;
     @Inject LyricsHistoryService lyricsHistory;
     @Inject WhatsAppService whatsApp;
+    @Inject PlaylistToneFlow playlistTone;
 
     /** Numeros permitidos (formato SIN el 1: 52 + 10 digitos). Vacio = todos. */
     @ConfigProperty(name = "bot.allowed-numbers")
@@ -101,6 +102,11 @@ public class SongPipeline {
         }
 
         String body = msg.text().body();
+
+        if (playlistTone.accepts(body)) {
+            workers.submit(() -> playlistTone.handle(from, body));
+            return;
+        }
 
         // Respuesta corta a la pregunta de una nota con varias versiones.
         if (body != null && RESPUESTA_VERSION.matcher(body.strip()).matches()) {
@@ -200,7 +206,7 @@ public class SongPipeline {
                     LOG.warn("No se pudo evaluar sugerencia de notas", e);
                 }
                 if (semitones == 0) {
-                    sb.append("\n\n\u00BFLa quieres en otro tono? Reenvia el link con \"tono -2\" (o +1, +2...)");
+                    sb.append("\n\nPara cambiar el tono, escribe \"bajar tono\" o \"subir tono\". Te preguntare cuales canciones y cuantos semitonos.");
                 }
             }
             if (!failed.isEmpty()) {
