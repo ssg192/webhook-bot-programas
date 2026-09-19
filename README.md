@@ -94,13 +94,22 @@ Activa `GEMINI_ENABLED=true` y configura `GEMINI_API_KEY` como secreto en el
 servidor. `GEMINI_MODEL` usa `gemini-3.1-flash-lite` por defecto. No guardes la
 clave en Git. Sin estas variables, los comandos funcionan sin IA.
 
-Puedes escribir «bájale dos semitonos a la de Ingrid», «la segunda» o «súbela
-un semitono» mientras eliges una canción. Se trabaja una canción por petición:
-si faltan datos o hay ambigüedad, el bot pide elegir una canción y su ajuste.
-Para **agregar canciones se siguen enviando links de YouTube**; Gemini sólo
-interpreta instrucciones sobre la playlist existente.
+Puedes hablar en lenguaje natural dentro del contexto de la playlist:
 
-Se envían a Google el mensaje, los nombres de los audios y el índice seleccionado;
+- «Bájale dos semitonos a la de Ingrid» o «sube esa un poquito» (pregunta cuánto).
+- «¿Y las notas?» o «trae las notas de esa canción»: copia los acordeorios del histórico.
+- «Crea las notas y sube esa a dos semitonos»: atiende ambas peticiones.
+- «Arma el documento de letras» o «¿qué canciones tenemos?».
+- «Elimina esa canción de la playlist»: manda sólo ese audio a la papelera, recuperable.
+
+Recuerda por usuario la última canción subida, elegida o ajustada y hasta seis
+mensajes de la conversación durante 30 minutos (en memoria; se pierde al reiniciar).
+Si una subida incluye varias canciones, pregunta cuál es «esa». Cada ajuste o
+eliminación afecta una canción; si no se puede identificar, pide aclaración.
+Para **agregar canciones se siguen enviando links de YouTube**.
+
+Se envían a Google el mensaje, hasta seis mensajes previos de esta conversación,
+los nombres de los audios, el índice seleccionado y la acción pendiente;
 no se envían audios, IDs de Drive, teléfonos ni el historial completo del chat.
 El nivel gratuito tiene límites y Google puede usar su contenido para mejorar
 productos; consulta [los precios y condiciones](https://ai.google.dev/gemini-api/docs/pricing).

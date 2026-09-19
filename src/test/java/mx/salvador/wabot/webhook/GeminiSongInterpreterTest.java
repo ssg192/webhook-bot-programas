@@ -30,7 +30,7 @@ class GeminiSongInterpreterTest {
         assertEquals(new GeminiSongInterpreter.Interpretation("tone", 1, -2), result);
         var payload = ai.json.readTree(ai.request);
         var data = ai.json.readTree(payload.path("contents").path(0).path("parts").path(0).path("text").asText());
-        assertEquals(3, data.size());
+        assertEquals(4, data.size());
         assertEquals("Uno.mp3", data.path("canciones").path(0).asText());
         assertEquals(0, data.path("seleccion").asInt());
         assertFalse(ai.request.contains("test-secret"));
@@ -89,6 +89,19 @@ class GeminiSongInterpreterTest {
         var error = assertThrows(GeminiSongInterpreter.Failure.class,
                 () -> ai.interpret("subela", List.of("Uno"), 1));
         assertEquals("GEMINI_MAX_TOKENS", error.code());
+    }
+
+    @Test
+    void permitsSupportedSongActionsButNeverAttachesPitchToDeletionOrNotes() throws Exception {
+        var ai = new Stub();
+        for (String intent : List.of("notes", "remove")) {
+            assertEquals(intent, ai.parse("{\"intent\":\"" + intent + "\",\"song\":1,\"semitones\":0}", 2).intent());
+            assertThrows(IOException.class, () -> ai.parse("{\"intent\":\"" + intent + "\",\"song\":1,\"semitones\":2}", 2));
+        }
+        assertEquals("tone_notes", ai.parse("{\"intent\":\"tone_notes\",\"song\":1,\"semitones\":2}", 2).intent());
+        for (String intent : List.of("lyrics", "list", "cancel")) {
+            assertEquals(intent, ai.parse("{\"intent\":\"" + intent + "\",\"song\":0,\"semitones\":0}", 2).intent());
+        }
     }
 
     private static class Stub extends GeminiSongInterpreter {

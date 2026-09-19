@@ -33,10 +33,58 @@ public class PlaylistToneFlow {
     @Inject PitchShifter shifter;
     @Inject WhatsAppService whatsApp;
     @Inject GeminiSongInterpreter interpreter;
+    @Inject SongPipeline pipeline;
 
     private record Pending(DriveService.EstructuraDomingo folder,
                            LocalDate sunday, List<AudioFile> songs, AudioFile selected,
-                           Instant expires) {}
+                           Instant expires, String action) {
+        Pending(DriveService.EstructuraDomingo folder, LocalDate sunday, List<AudioFile> songs,
+                AudioFile selected, Instant expires) {
+            this(folder, sunday, songs, selected, expires, "tone");
+        }
+    }
+
+    private record RecentSong(String id, LocalDate sunday, Instant expires) {}
+    private final Map<String, RecentSong> recentSongs = new ConcurrentHashMap<>();
+    private record History(List<String> messages, Instant expires) {}
+    private final Map<String, History> histories = new ConcurrentHashMap<>();
+
+    private List<String> history(String from) {
+        History history = histories.get(from);
+        if (history == null || history.expires().isBefore(Instant.now())) return List.of();
+        return history.messages();
+    }
+
+    private void rememberMessage(String from, String message) {
+        histories.entrySet().removeIf(e -> e.getValue().expires().isBefore(Instant.now()));
+        var messages = new java.util.ArrayList<>(history(from));
+        messages.add(message.substring(0, Math.min(message.length(), 1500)));
+        if (messages.size() > 6) messages.remove(0);
+        histories.put(from, new History(List.copyOf(messages), Instant.now().plusSeconds(1800)));
+    }
+
+    public void rememberSong(String from, String id) {
+        recentSongs.entrySet().removeIf(e -> e.getValue().expires().isBefore(Instant.now()));
+        if (id == null) recentSongs.remove(from);
+        else recentSongs.put(from, new RecentSong(id, Fechas.proximoDomingo(), Instant.now().plusSeconds(1800)));
+    }
+
+    public void rememberUpload(String from, String id) {
+        pending.remove(from);
+        histories.remove(from);
+        rememberSong(from, id);
+    }
+
+    private int recentSelection(String from, List<AudioFile> songs) {
+        RecentSong recent = recentSongs.get(from);
+        if (recent == null) return 0;
+        if (recent.expires().isBefore(Instant.now()) || !recent.sunday().equals(Fechas.proximoDomingo())) {
+            recentSongs.remove(from, recent);
+            return 0;
+        }
+        for (int i = 0; i < songs.size(); i++) if (songs.get(i).id().equals(recent.id())) return i + 1;
+        return 0;
+    }
 
     private final Map<String, Pending> pending = new ConcurrentHashMap<>();
 
@@ -59,7 +107,8 @@ public class PlaylistToneFlow {
             }
             if (text.equals("cancelar")) {
                 pending.remove(from);
-                whatsApp.replyText(from, "Cambio de tono cancelado. Si un ajuste ya comenzo, terminara de procesarse.");
+                histories.remove(from);
+                whatsApp.replyText(from, "Solicitud pendiente cancelada. Si una operacion ya comenzo, terminara de procesarse.");
                 return;
             }
             Pending choice = pending.get(from);
@@ -71,8 +120,12 @@ public class PlaylistToneFlow {
             if (choice.selected() == null) {
                 AudioFile selected = select(text, choice.songs());
                 Pending next = new Pending(choice.folder(), choice.sunday(),
-                        choice.songs(), selected, choice.expires());
-                if (pending.replace(from, choice, next)) askAmount(from, next);
+                        choice.songs(), selected, choice.expires(), choice.action());
+                if (pending.replace(from, choice, next)) {
+                    rememberSong(from, selected.id());
+                    if (next.action().equals("remove")) removeSelected(from, next);
+                    else askAmount(from, next);
+                }
                 return;
             }
             var match = ADJUSTMENT.matcher(text);
@@ -107,7 +160,7 @@ public class PlaylistToneFlow {
         if (!pending.remove(from, choice)) return;
         whatsApp.replyText(from, "Ajustando " + choice.selected().name() + ", te aviso...");
         var result = new StringBuilder("• ")
-                .append(replaceAudio(choice.selected(), choice.folder().playlistId(), semitones));
+                .append(replaceAudio(from, choice.selected(), choice.folder().playlistId(), semitones));
         result.append("\n\n").append(choice.folder().link());
         result.append("\n\nPara ajustar otra cancion, escribe cambiar tonalidad.");
         whatsApp.replyText(from, result.toString());
@@ -138,24 +191,73 @@ public class PlaylistToneFlow {
                 previous = new Pending(folder, sunday, songs, null, Instant.now().plusSeconds(1800));
                 if (pending.putIfAbsent(from, previous) != null) return;
             }
-            int selected = previous == null || previous.selected() == null ? 0 : songs.indexOf(previous.selected()) + 1;
-            var result = interpreter.interpret(body, songs.stream().map(AudioFile::name).toList(), selected);
+            int selected = previous.selected() == null ? recentSelection(from, songs) : songs.indexOf(previous.selected()) + 1;
+            var result = interpreter.interpret(body, songs.stream().map(AudioFile::name).toList(), selected,
+                    history(from), previous.action());
             // Una respuesta tardia de la IA no debe sobreescribir un menu nuevo o cancelado.
             if (pending.get(from) != previous) return;
-            if (result.intent().equals("unrelated")) {
-                whatsApp.replyText(from, "Para agregar canciones, envia sus links de YouTube. Para ajustar una, escribe cambiar tonalidad.");
+            rememberMessage(from, body);
+            if (result.intent().equals("cancel")) {
+                handle(from, "cancelar");
                 return;
             }
-            if (!result.intent().equals("tone") || result.song() == 0) {
+            if (result.intent().equals("list")) {
+                if (!pending.remove(from, previous)) return;
+                // Mostrar estado actual aunque la conversacion anterior tuviera un menu viejo.
+                List<AudioFile> current = drive.listAudioFiles(folder.playlistId());
+                var list = new StringBuilder("Canciones en la playlist:\n");
+                for (int i = 0; i < current.size(); i++) list.append(i + 1).append(". ").append(current.get(i).name()).append('\n');
+                list.append('\n').append(folder.link());
+                whatsApp.replyText(from, list.toString());
+                return;
+            }
+            if (result.intent().equals("lyrics")) {
+                if (!pending.remove(from, previous)) return;
+                pipeline.generarLetras(from);
+                return;
+            }
+            if (result.intent().equals("unrelated")) {
+                whatsApp.replyText(from, "Puedo mostrar la playlist, buscar notas, armar letras, cambiar el tono o quitar una cancion. Dime que necesitas; para agregar canciones, envia sus links de YouTube.");
+                return;
+            }
+            if (result.intent().equals("notes")) {
+                if (!pending.remove(from, previous)) return;
+                pipeline.generarNotas(from, result.song() == 0 ? null : songs.get(result.song() - 1).name());
+                return;
+            }
+            if (result.intent().equals("remove")) {
+                Pending removal = new Pending(folder, sunday, songs,
+                        result.song() == 0 ? null : songs.get(result.song() - 1),
+                        Instant.now().plusSeconds(1800), "remove");
+                if (!pending.replace(from, previous, removal)) return;
+                if (removal.selected() != null) removeSelected(from, removal);
+                else {
+                    var menu = new StringBuilder("¿Que cancion quieres quitar de la playlist?\n");
+                    for (int i = 0; i < songs.size(); i++) menu.append(i + 1).append(". ").append(songs.get(i).name()).append('\n');
+                    menu.append("Responde cancion 1, cancion 2, etc. La mandare a la papelera. Para salir, escribe cancelar.");
+                    whatsApp.replyText(from, menu.toString());
+                }
+                return;
+            }
+            if (result.intent().equals("tone_notes")) {
+                // Cumplir las dos peticiones; las notas pueden requerir elegir version por separado.
+                Pending claimed = new Pending(folder, sunday, songs, previous.selected(),
+                        Instant.now().plusSeconds(1800));
+                if (!pending.replace(from, previous, claimed)) return;
+                previous = claimed;
+                pipeline.generarNotas(from, null);
+                if (pending.get(from) != previous) return;
+            }
+            if (!List.of("tone", "tone_notes").contains(result.intent()) || result.song() == 0) {
                 whatsApp.replyText(from, "Necesito identificar una sola cancion y su ajuste. Elige una de la lista y luego indica subir o bajar y los semitonos.");
                 start(from);
                 return;
             }
             Pending choice = new Pending(folder, sunday, songs, songs.get(result.song() - 1),
                     Instant.now().plusSeconds(1800));
-            boolean installed = previous == null ? pending.putIfAbsent(from, choice) == null
-                    : pending.replace(from, previous, choice);
+            boolean installed = pending.replace(from, previous, choice);
             if (!installed) return;
+            rememberSong(from, choice.selected().id());
             if (result.semitones() == 0) {
                 askAmount(from, choice);
                 return;
@@ -172,6 +274,25 @@ public class PlaylistToneFlow {
                     ? "Gemini tardo demasiado en responder. Intentalo de nuevo en unos momentos."
                     : "No pude interpretar el mensaje por un fallo del servicio. Intentalo de nuevo en unos momentos.";
             whatsApp.replyText(from, message);
+        }
+    }
+
+    /** Quita solo el ID elegido, nunca variantes por nombre ni otros archivos. */
+    private synchronized void removeSelected(String from, Pending choice) {
+        if (!pending.remove(from, choice)) return;
+        try {
+            if (!drive.audioUnchanged(choice.selected(), choice.folder().playlistId())) {
+                whatsApp.replyText(from, "Esa cancion cambio o ya no esta en la playlist. Dime de nuevo cual quieres quitar.");
+                return;
+            }
+            drive.trashFile(choice.selected().id());
+            RecentSong recent = recentSongs.get(from);
+            if (recent != null && recent.id().equals(choice.selected().id())) recentSongs.remove(from, recent);
+            whatsApp.replyText(from, "Quite de la playlist: " + choice.selected().name()
+                    + ". Esta en la papelera de Drive y se puede recuperar.");
+        } catch (Exception e) {
+            LOG.warn("No se pudo quitar la cancion de la playlist", e);
+            whatsApp.replyText(from, "No pude quitar esa cancion. Revisa la playlist antes de intentarlo de nuevo.");
         }
     }
 
@@ -218,7 +339,7 @@ public class PlaylistToneFlow {
     }
 
     /** Serializa reemplazos locales; otro menu que apunte al archivo viejo se rechaza. */
-    private synchronized String replaceAudio(AudioFile song, String folderId, int semitones) {
+    private synchronized String replaceAudio(String from, AudioFile song, String folderId, int semitones) {
         Path temp = null;
         String uploadedName = null;
         try {
@@ -237,8 +358,9 @@ public class PlaylistToneFlow {
                 return song.name() + ": cambio durante el procesamiento. Vuelve a solicitar el cambio de tono.";
             }
             String name = adjustedName(song.name(), semitones);
-            drive.uploadNewAudio(shifted, name, folderId);
+            var uploaded = drive.uploadNewAudio(shifted, name, folderId);
             uploadedName = name;
+            rememberSong(from, uploaded.getId());
             drive.trashFile(song.id());
             return name + ": lista; version anterior en la papelera.";
         } catch (Exception e) {

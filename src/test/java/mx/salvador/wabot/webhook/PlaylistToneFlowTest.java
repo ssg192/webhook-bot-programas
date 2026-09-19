@@ -24,6 +24,7 @@ class PlaylistToneFlowTest {
     private FakeDrive drive;
     private FakePitch pitch;
     private FakeWhatsApp messages;
+    private FakePipeline pipeline;
 
     @BeforeEach
     void setup() {
@@ -35,6 +36,8 @@ class PlaylistToneFlowTest {
         flow.shifter = pitch;
         flow.whatsApp = messages;
         flow.interpreter = new GeminiSongInterpreter(); // Desactivado por defecto.
+        pipeline = new FakePipeline();
+        flow.pipeline = pipeline;
     }
 
     @Test
@@ -260,16 +263,135 @@ class PlaylistToneFlowTest {
         assertTrue(drive.events.isEmpty());
     }
 
+    @Test
+    void notesFollowupInvokesExistingNotesWorkflow() {
+        flow.interpreter = new FakeInterpreter("notes", 0, 0);
+        flow.handleNatural("a", "y las notas?");
+        assertEquals(1, pipeline.notesRequests.size());
+        assertNull(pipeline.notesRequests.get(0));
+        assertTrue(drive.events.isEmpty());
+    }
+
+    @Test
+    void notesForSpecificSongAreScopedToThatSong() {
+        flow.interpreter = new FakeInterpreter("notes", 2, 0);
+        flow.handleNatural("a", "traeme las notas de la segunda");
+        assertEquals(List.of("Dos.mp3"), pipeline.notesRequests);
+    }
+
+    @Test
+    void combinedNotesAndToneRequestDoesBothOnce() {
+        flow.interpreter = new FakeInterpreter("tone_notes", 1, 2);
+        flow.handleNatural("a", "crea las notas y sube esa a dos semitonos");
+        assertEquals(1, pipeline.notesRequests.size());
+        assertEquals(List.of(2), pitch.shifts);
+        assertEquals(Set.of("1"), drive.trashed);
+    }
+
+    @Test
+    void removalAfterAdjustmentTargetsNewFileAndKeepsContextAcrossNotes() {
+        flow.handle("a", "cambiar tonalidad");
+        flow.handle("a", "cancion 1");
+        flow.handle("a", "subir 2");
+        flow.interpreter = new FakeInterpreter("notes", 0, 0);
+        flow.handleNatural("a", "y las notas?");
+        var ai = new FakeInterpreter("remove", 3, 0);
+        flow.interpreter = ai;
+        flow.handleNatural("a", "elimina esa cancion de la playlist");
+        assertEquals(3, ai.selected); // Dos, Tres, Uno (+2): el ID nuevo esta al final.
+        assertEquals("Uno (+2).mp3", ai.names.get(2));
+        assertEquals(Set.of("1", "new-Uno (+2).mp3"), drive.trashed);
+        assertTrue(messages.last().contains("se puede recuperar"));
+    }
+
+    @Test
+    void recentUploadContextIsPerSenderAndCanBeClearedForMultipleUploads() {
+        flow.rememberSong("a", "2");
+        var ai = new FakeInterpreter("tone", 0, 0);
+        flow.interpreter = ai;
+        flow.handleNatural("a", "sube esa");
+        assertEquals(2, ai.selected);
+        flow.handleNatural("b", "sube esa");
+        assertEquals(0, ai.selected);
+        flow.handle("a", "cancelar");
+        flow.rememberSong("a", null);
+        flow.handleNatural("a", "sube esa");
+        assertEquals(0, ai.selected);
+    }
+
+    @Test
+    void missingRemovalTargetAsksThenKeepsRemovalIntentForNaturalSelection() {
+        flow.interpreter = new FakeInterpreter("remove", 0, 0);
+        flow.handleNatural("a", "quita esa cancion");
+        assertTrue(drive.events.isEmpty());
+        assertTrue(messages.last().contains("quieres quitar"));
+        var ai = new FakeInterpreter("remove", 2, 0);
+        flow.interpreter = ai;
+        flow.handleNatural("a", "la segunda");
+        assertEquals("remove", ai.pendingAction);
+        assertEquals(Set.of("2"), drive.trashed);
+        assertTrue(pitch.shifts.isEmpty());
+    }
+
+    @Test
+    void removalMenuAlsoAcceptsNumberedSelectionAndRejectsChangedFile() {
+        flow.interpreter = new FakeInterpreter("remove", 0, 0);
+        flow.handleNatural("a", "quita una cancion");
+        drive.changed.add("2");
+        flow.handle("a", "cancion 2");
+        assertTrue(drive.trashed.isEmpty());
+        assertTrue(messages.last().contains("cambio"));
+    }
+
+    @Test
+    void shortAmountFollowupReceivesEarlierDirection() {
+        flow.interpreter = new FakeInterpreter("tone", 1, 0);
+        flow.handleNatural("a", "sube esa un poquito");
+        assertTrue(drive.events.isEmpty());
+        var ai = new FakeInterpreter("tone", 1, 2);
+        flow.interpreter = ai;
+        flow.handle("a", "dos");
+        assertEquals(List.of("sube esa un poquito"), ai.previousMessages);
+        assertEquals(List.of(2), pitch.shifts);
+    }
+
+    @Test
+    void naturalLyricsAndPlaylistQueriesUseExistingData() {
+        flow.interpreter = new FakeInterpreter("lyrics", 0, 0);
+        flow.handleNatural("a", "armame el documento de letras");
+        assertEquals(1, pipeline.lyricsRequests);
+        flow.interpreter = new FakeInterpreter("list", 0, 0);
+        flow.handleNatural("a", "que canciones tenemos?");
+        assertTrue(messages.last().contains("1. Uno.mp3"));
+        assertTrue(messages.last().contains("3. Tres.m4a"));
+        assertTrue(drive.events.isEmpty());
+    }
+
+    private static class FakePipeline extends SongPipeline {
+        List<String> notesRequests = new ArrayList<>();
+        int lyricsRequests;
+        @Override void generarNotas(String from, String selectedSong) { notesRequests.add(selectedSong); }
+        @Override void generarLetras(String from) { lyricsRequests++; }
+    }
+
     private static class FakeInterpreter extends GeminiSongInterpreter {
         final Interpretation result;
         int selected;
         List<String> names;
         boolean fail;
         Runnable duringInterpret;
+        List<String> previousMessages;
+        String pendingAction;
         FakeInterpreter(String intent, int song, int semitones) {
             result = new Interpretation(intent, song, semitones);
         }
         @Override public boolean available() { return true; }
+        @Override public Interpretation interpret(String message, List<String> songs, int selected,
+                                                   List<String> previousMessages, String pendingAction) throws Exception {
+            this.previousMessages = previousMessages;
+            this.pendingAction = pendingAction;
+            return interpret(message, songs, selected);
+        }
         @Override public Interpretation interpret(String message, List<String> songs, int selected) throws Exception {
             this.names = songs;
             this.selected = selected;
@@ -287,11 +409,15 @@ class PlaylistToneFlowTest {
         Set<String> changed = new HashSet<>();
         String failUpload;
         boolean failTrash;
+        List<AudioFile> uploaded = new ArrayList<>();
 
         @Override public EstructuraDomingo ensureSundayStructure(LocalDate date) {
             return new EstructuraDomingo("playlist", "notes", "sunday", "folder-link");
         }
-        @Override public List<AudioFile> listAudioFiles(String parentId) { return songs; }
+        @Override public List<AudioFile> listAudioFiles(String parentId) {
+            return java.util.stream.Stream.concat(songs.stream(), uploaded.stream())
+                    .filter(song -> !trashed.contains(song.id())).toList();
+        }
         @Override public boolean audioUnchanged(AudioFile audio, String parentId) {
             return !changed.contains(audio.id()) && !trashed.contains(audio.id());
         }
@@ -303,6 +429,7 @@ class PlaylistToneFlowTest {
             events.add("upload:" + name);
             if (name.equals(failUpload)) throw new IOException("Simulated upload failure");
             assertTrue(Files.size(path) > 0);
+            uploaded.add(new AudioFile("new-" + name, name, 1L));
             return new File().setId("new-" + name);
         }
         @Override public void trashFile(String id) throws Exception {

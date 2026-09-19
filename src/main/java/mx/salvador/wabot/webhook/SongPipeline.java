@@ -131,6 +131,9 @@ public class SongPipeline {
             if (resto.isEmpty()) {
                 whatsApp.replyText(from, "Buscando las notas en el historico...");
                 workers.submit(() -> generarNotas(from));
+            } else if (playlistTone.naturalLanguageEnabled()
+                    && !resto.matches("(?i).+\\s+(?:(?:version|versión)\\s+\\d+|todas)")) {
+                workers.submit(() -> playlistTone.handleNatural(from, body));
             } else {
                 workers.submit(() -> copiarNotaElegida(from, resto));
             }
@@ -167,7 +170,7 @@ public class SongPipeline {
     }
 
     /** Resultado de procesar un link: etiqueta si salio bien, o la url que fallo. */
-    private record Resultado(String etiqueta, String urlFallida) {}
+    private record Resultado(String etiqueta, String urlFallida, String audioId) {}
 
     private void process(String from, List<String> urls, int semitones) {
         try {
@@ -185,14 +188,20 @@ public class SongPipeline {
             // Recoger en el mismo orden en que llegaron los links
             List<String> ok = new ArrayList<>();
             List<String> failed = new ArrayList<>();
+            List<String> uploadedIds = new ArrayList<>();
             for (var f : futures) {
                 Resultado r = f.get();
-                if (r.etiqueta() != null) ok.add(r.etiqueta());
+                if (r.etiqueta() != null) {
+                    ok.add(r.etiqueta());
+                    uploadedIds.add(r.audioId());
+                }
                 else failed.add(r.urlFallida());
             }
 
             var sb = new StringBuilder();
             if (!ok.isEmpty()) {
+                // Una subida multiple no define inequivocamente "esa cancion".
+                playlistTone.rememberUpload(from, uploadedIds.size() == 1 ? uploadedIds.get(0) : null);
                 sb.append("Subidas a *").append(carpeta).append("/Playlist*:\n");
                 ok.forEach(t -> sb.append("\u2022 ").append(t).append('\n'));
                 sb.append('\n').append(estructura.link());
@@ -232,7 +241,7 @@ public class SongPipeline {
         }
     }
 
-    private void generarLetras(String from) {
+    void generarLetras(String from) {
         try {
             var domingo = Fechas.proximoDomingo();
             var carpeta = Fechas.nombreCarpeta(domingo);
@@ -293,13 +302,18 @@ public class SongPipeline {
     }
 
     private void generarNotas(String from) {
+        generarNotas(from, null);
+    }
+
+    void generarNotas(String from, String selectedSong) {
         try {
             versionesPendientes.remove(from);
             var domingo = Fechas.proximoDomingo();
             var carpeta = Fechas.nombreCarpeta(domingo);
             var estructura = driveService.ensureSundayStructure(domingo);
 
-            List<String> mp3s = driveService.listMp3Names(estructura.playlistId());
+            List<String> mp3s = driveService.listMp3Names(estructura.playlistId()).stream()
+                    .filter(name -> selectedSong == null || name.equals(selectedSong)).toList();
             if (mp3s.isEmpty()) {
                 whatsApp.replyText(from, "Aun no hay canciones en la playlist de " + carpeta + ".");
                 return;
@@ -492,7 +506,7 @@ public class SongPipeline {
                 aSubir = pitchShifter.shift(descargado, semitones);
             }
 
-            driveService.uploadMp3(aSubir, estructura.playlistId());
+            var uploaded = driveService.uploadMp3(aSubir, estructura.playlistId());
 
             // Version con tono: la original y variantes previas van a papelera
             if (semitones != 0) {
@@ -508,10 +522,10 @@ public class SongPipeline {
                     ? descarga.titulo()
                     : "%s (%s%d)".formatted(descarga.titulo(),
                     semitones > 0 ? "+" : "", semitones);
-            return new Resultado(etiqueta, null);
+            return new Resultado(etiqueta, null, uploaded.getId());
         } catch (Exception e) {
             LOG.errorf(e, "Fallo con %s", url);
-            return new Resultado(null, url);
+            return new Resultado(null, url, null);
         } finally {
             deleteQuietly(descargado);
             if (aSubir != null && !aSubir.equals(descargado)) {
