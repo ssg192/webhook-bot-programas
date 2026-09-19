@@ -26,7 +26,19 @@ public record WebhookPayload(List<Entry> entry) {
     public record Profile(String name) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Message(String id, String from, String type, Text text) {}
+    public record Message(String id, String from, String type, Text text, Interactive interactive) {
+        public Message(String id, String from, String type, Text text) { this(id, from, type, text, null); }
+        public String body() {
+            if ("text".equals(type) && text != null) return text.body();
+            if ("interactive".equals(type) && interactive != null && interactive.button_reply() != null)
+                return interactive.button_reply().id();
+            return null;
+        }
+    }
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record Interactive(ButtonReply button_reply) {}
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ButtonReply(String id, String title) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record Text(String body) {}

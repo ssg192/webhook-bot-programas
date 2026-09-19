@@ -34,6 +34,15 @@ public class PlaylistToneFlow {
     @Inject WhatsAppService whatsApp;
     @Inject GeminiSongInterpreter interpreter;
     @Inject SongPipeline pipeline;
+    @Inject ContextStore contextStore;
+
+    @jakarta.annotation.PostConstruct
+    void loadContext() {
+        var saved = contextStore.read("recentSongs", new com.fasterxml.jackson.core.type.TypeReference<Map<String, RecentSong>>() {});
+        if (saved != null) saved.forEach((key, value) -> {
+            if (value.expires().isAfter(Instant.now()) && value.sunday().equals(Fechas.proximoDomingo())) recentSongs.put(key, value);
+        });
+    }
 
     private record Pending(DriveService.EstructuraDomingo folder,
                            LocalDate sunday, List<AudioFile> songs, AudioFile selected,
@@ -67,10 +76,12 @@ public class PlaylistToneFlow {
         recentSongs.entrySet().removeIf(e -> e.getValue().expires().isBefore(Instant.now()));
         if (id == null) recentSongs.remove(from);
         else recentSongs.put(from, new RecentSong(id, Fechas.proximoDomingo(), Instant.now().plusSeconds(1800)));
+        if (contextStore != null) contextStore.save("recentSongs", recentSongs);
     }
 
     public void rememberUpload(String from, String id) {
         pending.remove(from);
+        confirmations.remove(from);
         rememberSong(from, id);
     }
 
@@ -86,11 +97,61 @@ public class PlaylistToneFlow {
     }
 
     private final Map<String, Pending> pending = new ConcurrentHashMap<>();
+    private record Confirmation(String token, String summary, Instant expires, LocalDate sunday, Runnable execute) {}
+    private final Map<String, Confirmation> confirmations = new ConcurrentHashMap<>();
+    private record Undo(String summary, Instant expires, LocalDate sunday, Runnable action) {}
+    private final Map<String, Undo> undo = new ConcurrentHashMap<>();
+
+    private void rememberUndo(String from, String summary, Runnable action) {
+        undo.put(from, new Undo(summary, Instant.now().plusSeconds(1800), Fechas.proximoDomingo(), action));
+    }
+
+    private void askUndo(String from) {
+        Undo last = undo.get(from);
+        if (last == null || last.expires().isBefore(Instant.now()) || !last.sunday().equals(Fechas.proximoDomingo())) {
+            whatsApp.replyText(from, "No tengo una operacion reciente que pueda deshacer con seguridad. No hice cambios.");
+            return;
+        }
+        askConfirmation(from, "¿Deshago la ultima operacion? " + last.summary(), () -> {
+            if (!undo.remove(from, last)) { whatsApp.replyText(from, "La ultima operacion cambio; pide deshacer de nuevo."); return; }
+            last.action().run();
+        });
+    }
+
+    boolean isConfirmation(String body) {
+        String text = normalize(body);
+        return text.equals("confirmar") || text.startsWith("confirm:") || text.startsWith("cancel:");
+    }
+
+    private void askConfirmation(String from, String summary, Runnable action) {
+        String token = java.util.UUID.randomUUID().toString();
+        confirmations.put(from, new Confirmation(token, summary, Instant.now().plusSeconds(300), Fechas.proximoDomingo(), action));
+        whatsApp.confirmButtons(from, summary, token);
+    }
+
+    private boolean handleConfirmation(String from, String body) {
+        if (!isConfirmation(body) && !body.startsWith("cancel:")) return false;
+        Confirmation choice = confirmations.get(from);
+        if (choice == null || choice.expires().isBefore(Instant.now()) || !choice.sunday().equals(Fechas.proximoDomingo())) {
+            if (choice != null) confirmations.remove(from, choice);
+            whatsApp.replyText(from, "No hay una confirmacion vigente. Pideme de nuevo lo que quieres hacer.");
+            return true;
+        }
+        if (body.contains(":") && !body.substring(body.indexOf(':') + 1).equals(choice.token())) {
+            whatsApp.replyText(from, "Ese boton pertenece a una pregunta anterior; usa la confirmacion mas reciente.");
+            return true;
+        }
+        if (!confirmations.remove(from, choice)) return true;
+        if (body.startsWith("cancel:")) whatsApp.replyText(from, "Cancelado; no hice cambios.");
+        else choice.execute().run();
+        return true;
+    }
 
     public boolean accepts(String body) {
         if (body == null) return false;
         String text = normalize(body);
         return text.equals("cambiar tonalidad") || text.equals("bajar tono") || text.equals("subir tono")
+                || isConfirmation(text) || text.equals("deshacer")
                 || text.equals("todas") || text.equals("cancelar")
                 || SONGS.matcher(text).matches() || AMOUNT.matcher(text).matches()
                 || ADJUSTMENT.matcher(text).matches() || text.equals("subir") || text.equals("bajar");
@@ -100,11 +161,15 @@ public class PlaylistToneFlow {
         String text = normalize(body);
         pending.entrySet().removeIf(e -> e.getValue().expires().isBefore(Instant.now()));
         try {
+            if (handleConfirmation(from, text)) return;
+            confirmations.remove(from);
+            if (text.equals("deshacer")) { askUndo(from); return; }
             if (text.equals("cambiar tonalidad") || text.equals("bajar tono") || text.equals("subir tono")) {
                 start(from);
                 return;
             }
             if (text.equals("cancelar")) {
+                confirmations.remove(from);
                 pending.remove(from);
                 histories.remove(from);
                 pipeline.cancelNoteChoice(from);
@@ -117,13 +182,14 @@ public class PlaylistToneFlow {
                 whatsApp.replyText(from, "Escribe \"cambiar tonalidad\" para comenzar.");
                 return;
             }
+            if (choice.action().equals("clarify")) { handleNatural(from, body); return; }
             if (choice.selected() == null) {
                 AudioFile selected = select(text, choice.songs());
                 Pending next = new Pending(choice.folder(), choice.sunday(),
                         choice.songs(), selected, choice.expires(), choice.action());
                 if (pending.replace(from, choice, next)) {
                     rememberSong(from, selected.id());
-                    if (next.action().equals("remove")) removeSelected(from, next);
+                    if (next.action().equals("remove")) confirmRemoval(from, next);
                     else askAmount(from, next);
                 }
                 return;
@@ -210,6 +276,8 @@ public class PlaylistToneFlow {
                 // Consulta sin efectos sobre archivos ni preguntas pendientes. No espera al indice de letras.
                 rememberMessage(from, body);
                 if (result.song() > 0) rememberSong(from, songs.get(result.song() - 1).id());
+                if (!result.intent().equals("status_lyrics")) pipeline.verifyNotes(
+                        result.song() == 0 ? names : List.of(names.get(result.song() - 1)), folder.notasId());
                 whatsApp.replyText(from, MusicWorkState.describe(pipeline.context(from, names), result.intent(), result.song()));
                 return;
             }
@@ -217,12 +285,64 @@ public class PlaylistToneFlow {
             if (pending.get(from) != previous) return;
             if (noteChoice != null && pipeline.pendingNoteChoice(from) != noteChoice) return;
             rememberMessage(from, body);
+            confirmations.remove(from); // Una correccion invalida la propuesta anterior.
+            if (result.intent().equals("draft_notes")) {
+                if (!pending.remove(from, previous)) return;
+                var song = songs.get(result.song() - 1);
+                rememberSong(from, song.id());
+                pipeline.requestNoteDraft(from, song.name(), result.targetKey());
+                return;
+            }
+            if (List.of("remove", "remove_notes").contains(result.intent()) && ambiguousNamedTarget(body, songs)) {
+                pending.replace(from, previous, new Pending(folder, sunday, songs, null, Instant.now().plusSeconds(1800), "clarify"));
+                var menu = new StringBuilder("Hay varias canciones que coinciden. ¿Cual quieres y te refieres al audio o a las notas?\n");
+                for (int i = 0; i < songs.size(); i++) menu.append(i + 1).append(". ").append(songs.get(i).name()).append('\n');
+                whatsApp.replyText(from, menu.toString());
+                return;
+            }
+            if (result.intent().equals("undo")) { askUndo(from); return; }
+            if (result.intent().equals("tone_batch")) {
+                if (!pending.remove(from, previous)) return;
+                var snapshot = List.copyOf(songs);
+                var summary = new StringBuilder("Aplicare estos cambios sobre el tono actual:\n");
+                for (var adjustment : result.adjustments()) summary.append("• ").append(snapshot.get(adjustment.song() - 1).name())
+                        .append(": ").append(adjustment.semitones() > 0 ? "subir " : "bajar ")
+                        .append(Math.abs(adjustment.semitones())).append(" semitonos\n");
+                askConfirmation(from, summary.toString(), () -> {
+                    whatsApp.replyText(from, "Aplicando los cambios confirmados; te avisare del resultado de cada cancion.");
+                    var reply = new StringBuilder();
+                    var undoSteps = new java.util.ArrayList<Undo>();
+                    for (var adjustment : result.adjustments()) {
+                        var before = undo.get(from);
+                        reply.append("• ").append(replaceAudio(from, snapshot.get(adjustment.song() - 1), folder.playlistId(), adjustment.semitones())).append('\n');
+                        var after = undo.get(from);
+                        if (after != null && after != before) undoSteps.add(after);
+                    }
+                    if (!undoSteps.isEmpty()) rememberUndo(from, "Recuperar los audios anteriores del ultimo lote (" + undoSteps.size() + ").", () -> {
+                        for (int i = undoSteps.size() - 1; i >= 0; i--) undoSteps.get(i).action().run();
+                    });
+                    whatsApp.replyText(from, reply.toString());
+                });
+                return;
+            }
+            if (result.intent().equals("remove_notes")) {
+                if (!pending.remove(from, previous)) return;
+                var song = songs.get(result.song() - 1);
+                var copies = pipeline.workState.copies(song.name());
+                if (copies.isEmpty()) { removeNotes(from, song, folder.notasId()); return; }
+                askConfirmation(from, "¿Borro solo las notas de " + song.name() + "?\n"
+                        + copies.stream().map(MusicWorkState.NoteCopy::name).collect(java.util.stream.Collectors.joining("\n"))
+                        + "\nEl audio y el historico se conservan.",
+                        () -> removeNotesSnapshot(from, song, folder.notasId(), copies));
+                return;
+            }
             if (result.intent().equals("note_version")) {
                 if (!pending.remove(from, previous)) return;
                 pipeline.chooseNoteVersion(from, noteChoice, result.song());
                 return;
             }
-            if (noteChoice != null && result.intent().equals("clarify")) {
+            if (noteChoice != null && result.intent().equals("clarify")
+                    && !normalize(body).matches(".*\\b(borra|borrar|elimina|eliminar|quita|quitar)\\b.*")) {
                 pending.remove(from, previous);
                 pipeline.repeatNoteQuestion(from);
                 return;
@@ -275,15 +395,24 @@ public class PlaylistToneFlow {
                 return;
             }
             if (result.intent().equals("clarify")) {
-                whatsApp.replyText(from, "¿A cual cancion o tarea te refieres? Dime el titulo y si quieres consultar su estado o hacer un cambio.");
+                pending.replace(from, previous, new Pending(folder, sunday, songs, null, Instant.now().plusSeconds(1800), "clarify"));
+                var menu = new StringBuilder("¿A cual cancion o tarea te refieres?\n");
+                for (int i = 0; i < songs.size(); i++) menu.append(i + 1).append(". ").append(songs.get(i).name()).append('\n');
+                menu.append("Dime el titulo o numero y si hablas del audio, las notas o las letras.");
+                whatsApp.replyText(from, menu.toString());
                 return;
             }
             if (result.intent().equals("remove")) {
+                // Defensa independiente del modelo: documentos nunca se enrutan a borrar audio.
+                if (normalize(body).matches("(?s).*\\b(notas?|acordes?|acordeorios?|partituras?|letras?|docx?|documentos?|pdf)\\b.*")) {
+                    whatsApp.replyText(from, "No borre el audio. ¿Quieres eliminar las notas o el documento de letras, y de que cancion?");
+                    return;
+                }
                 Pending removal = new Pending(folder, sunday, songs,
                         result.song() == 0 ? null : songs.get(result.song() - 1),
                         Instant.now().plusSeconds(1800), "remove");
                 if (!pending.replace(from, previous, removal)) return;
-                if (removal.selected() != null) removeSelected(from, removal);
+                if (removal.selected() != null) confirmRemoval(from, removal);
                 else {
                     var menu = new StringBuilder("¿Que cancion quieres quitar de la playlist?\n");
                     for (int i = 0; i < songs.size(); i++) menu.append(i + 1).append(". ").append(songs.get(i).name()).append('\n');
@@ -330,7 +459,51 @@ public class PlaylistToneFlow {
         }
     }
 
+    private synchronized void removeNotes(String from, AudioFile song, String notesFolder) {
+        var copies = pipeline.workState.copies(song.name());
+        if (copies.isEmpty()) {
+            whatsApp.replyText(from, "No tengo identificadas las copias de notas de " + song.name()
+                    + ". No borre ningun archivo. Necesito identificar la copia exacta en Notas/.");
+            return;
+        }
+        removeNotesSnapshot(from, song, notesFolder, copies);
+    }
+
+    private synchronized void removeNotesSnapshot(String from, AudioFile song, String notesFolder, List<MusicWorkState.NoteCopy> copies) {
+        try {
+            var snapshots = new java.util.ArrayList<DriveService.TrashedFile>();
+            for (var copy : copies) {
+                if (!copy.folder().equals(notesFolder)) throw new IllegalStateException("Carpeta de notas distinta");
+                drive.trashNoteCopy(copy.id(), notesFolder);
+                pipeline.workState.removedCopy(song.name(), copy);
+                try {
+                    snapshots.add(drive.trashedSnapshot(copy.id(), notesFolder));
+                    var restore = List.copyOf(snapshots);
+                    rememberUndo(from, "Recuperar las notas de " + song.name(), () -> {
+                        try {
+                            for (var file : restore) {
+                                drive.restoreTrashed(file);
+                                pipeline.workState.copied(song.name(), file.id(), file.name(), file.folder());
+                            }
+                            pipeline.workState.note(song.name(), "Notas recuperadas de la papelera");
+                            whatsApp.replyText(from, "Notas recuperadas. El audio no se modifico.");
+                        } catch (Exception e) { whatsApp.replyText(from, "No pude recuperar todas las notas. Revisa Notas/ y la papelera."); }
+                    });
+                } catch (Exception e) { undo.remove(from); }
+            }
+            rememberSong(from, song.id());
+            whatsApp.replyText(from, "Notas de " + song.name() + " enviadas a la papelera. El audio sigue en la playlist y el historico no se modifico.");
+        } catch (Exception e) {
+            whatsApp.replyText(from, "No pude completar la eliminacion de notas. El audio no se modifico; revisa Notas/ antes de reintentar.");
+        }
+    }
+
     /** Quita solo el ID elegido, nunca variantes por nombre ni otros archivos. */
+    private void confirmRemoval(String from, Pending choice) {
+        askConfirmation(from, "¿Quito el AUDIO de " + choice.selected().name()
+                + " de la playlist? Las notas y letras se conservan.", () -> removeSelected(from, choice));
+    }
+
     private synchronized void removeSelected(String from, Pending choice) {
         if (!pending.remove(from, choice)) return;
         try {
@@ -339,6 +512,16 @@ public class PlaylistToneFlow {
                 return;
             }
             drive.trashFile(choice.selected().id());
+            try {
+                var removed = drive.trashedSnapshot(choice.selected().id(), choice.folder().playlistId());
+                rememberUndo(from, "Recuperar el audio " + choice.selected().name(), () -> {
+                    try {
+                        drive.restoreTrashed(removed);
+                        rememberSong(from, removed.id());
+                        whatsApp.replyText(from, "Audio recuperado en la playlist: " + removed.name());
+                    } catch (Exception e) { whatsApp.replyText(from, "No pude recuperar ese audio; cambio o ya no esta en la papelera."); }
+                });
+            } catch (Exception e) { undo.remove(from); }
             RecentSong recent = recentSongs.get(from);
             if (recent != null && recent.id().equals(choice.selected().id())) recentSongs.remove(from, recent);
             whatsApp.replyText(from, "Quite de la playlist: " + choice.selected().name()
@@ -415,6 +598,19 @@ public class PlaylistToneFlow {
             uploadedName = name;
             rememberSong(from, uploaded.getId());
             drive.trashFile(song.id());
+            try {
+                var original = drive.trashedSnapshot(song.id(), folderId);
+                var replacement = drive.listAudioFiles(folderId).stream().filter(file -> file.id().equals(uploaded.getId())).findFirst().orElseThrow();
+                rememberUndo(from, "Recuperar el tono anterior de " + song.name(), () -> {
+                    try {
+                        if (!drive.audioUnchanged(replacement, folderId)) throw new IllegalStateException("El audio cambio");
+                        drive.restoreTrashed(original);
+                        drive.trashFile(replacement.id());
+                        rememberSong(from, original.id());
+                        whatsApp.replyText(from, "Recupere el audio anterior: " + original.name());
+                    } catch (Exception e) { whatsApp.replyText(from, "No pude completar deshacer. Revisa la playlist; podria contener ambas versiones."); }
+                });
+            } catch (Exception e) { undo.remove(from); }
             return name + ": lista; version anterior en la papelera.";
         } catch (Exception e) {
             LOG.errorf(e, "No se pudo reemplazar el audio %s", song.id());
@@ -450,5 +646,12 @@ public class PlaylistToneFlow {
 
     private static String normalize(String body) {
         return body.strip().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
+    }
+
+    static boolean ambiguousNamedTarget(String body, List<AudioFile> songs) {
+        var match = Pattern.compile("(?i).*\\b(?:de|por)\\s+([\\p{L}\\p{N} ]+)[?.!]*$").matcher(normalize(body));
+        if (!match.matches()) return false;
+        String query = match.group(1).strip();
+        return songs.stream().filter(song -> normalize(song.name().replace('_', ' ')).contains(query)).count() > 1;
     }
 }

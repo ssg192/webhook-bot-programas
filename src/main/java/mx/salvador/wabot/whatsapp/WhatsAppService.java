@@ -8,6 +8,12 @@ import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class WhatsAppService {
+    @Inject mx.salvador.wabot.webhook.ContextStore contextStore;
+    @jakarta.annotation.PostConstruct
+    void loadConversations() {
+        var saved = contextStore.read("conversations", new com.fasterxml.jackson.core.type.TypeReference<java.util.Map<String, Conversation>>() {});
+        if (saved != null) saved.forEach((key, value) -> { if (value.expires().isAfter(java.time.Instant.now())) conversations.put(key, value); });
+    }
     private record Conversation(java.util.List<java.util.Map<String, String>> messages, java.time.Instant expires) {}
     private final java.util.Map<String, Conversation> conversations = new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -24,6 +30,7 @@ public class WhatsAppService {
             while (messages.size() > 16) messages.remove(0);
             return new Conversation(java.util.List.copyOf(messages), java.time.Instant.now().plusSeconds(1800));
         });
+        if (contextStore != null) contextStore.save("conversations", conversations);
     }
 
     public java.util.List<java.util.Map<String, String>> conversation(String from) {
@@ -51,6 +58,17 @@ public class WhatsAppService {
             remember(to, "assistant", body);
         } catch (Exception e) {
             LOG.errorf(e, "Error enviando mensaje a %s", to);
+        }
+    }
+
+    public void confirmButtons(String to, String body, String token) {
+        String message = body + "\nResponde confirmar o cancelar.";
+        try {
+            graphApi.sendMessage(phoneNumberId, "Bearer " + accessToken,
+                    GraphApiClient.OutgoingMessage.buttons(to, message, token));
+            remember(to, "assistant", message);
+        } catch (Exception e) {
+            replyText(to, message); // Sigue funcionando por texto si Meta rechaza los botones.
         }
     }
 }

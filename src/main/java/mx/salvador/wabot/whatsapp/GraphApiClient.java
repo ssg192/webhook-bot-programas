@@ -20,9 +20,16 @@ public interface GraphApiClient {
             @HeaderParam("Authorization") String bearerToken,
             OutgoingMessage message);
 
-    record OutgoingMessage(String messaging_product, String to, String type, Text text) {
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+    record OutgoingMessage(String messaging_product, String to, String type, Text text, Object interactive) {
         public static OutgoingMessage text(String to, String body) {
-            return new OutgoingMessage("whatsapp", to, "text", new Text(body));
+            return new OutgoingMessage("whatsapp", to, "text", new Text(body), null);
+        }
+        public static OutgoingMessage buttons(String to, String body, String token) {
+            return new OutgoingMessage("whatsapp", to, "interactive", null, java.util.Map.of(
+                    "type", "button", "body", java.util.Map.of("text", body), "action", java.util.Map.of("buttons", java.util.List.of(
+                            java.util.Map.of("type", "reply", "reply", java.util.Map.of("id", "confirm:" + token, "title", "Confirmar")),
+                            java.util.Map.of("type", "reply", "reply", java.util.Map.of("id", "cancel:" + token, "title", "Cancelar"))))));
         }
     }
 

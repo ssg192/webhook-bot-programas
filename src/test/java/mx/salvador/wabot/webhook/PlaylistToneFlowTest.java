@@ -21,6 +21,120 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class PlaylistToneFlowTest {
     @Test
+    void staleConfirmationButtonCannotApproveANewerProposal() {
+        flow.interpreter = new FakeInterpreter("remove", 1, 0);
+        flow.handleNatural("a", "borra uno");
+        String oldToken = messages.token;
+        flow.interpreter = new FakeInterpreter("remove", 2, 0);
+        flow.handleNatural("a", "no, borra dos");
+        flow.handle("a", "confirm:" + oldToken);
+        assertTrue(drive.events.isEmpty());
+        flow.handle("a", "confirm:" + messages.token);
+        assertEquals(Set.of("2"), drive.trashed);
+    }
+    @Test
+    void ambiguousArtistNeverSelectsOneOfTwoIngridSongsEvenIfModelDoes() {
+        drive.songs = List.of(new AudioFile("i1", "Ingrid - El poder de tu amor.m4a", 1L),
+                new AudioFile("i2", "Ingrid - Que se llene tu casa.m4a", 1L));
+        flow.rememberSong("a", "i2");
+        flow.interpreter = new FakeInterpreter("remove", 2, 0);
+        flow.handleNatural("a", "borra la de ingrid");
+        assertTrue(messages.last().contains("Hay varias"));
+        assertTrue(messages.last().contains("El poder de tu amor"));
+        assertTrue(messages.last().contains("Que se llene tu casa"));
+        flow.handle("a", "confirmar");
+        assertTrue(drive.events.isEmpty());
+    }
+
+    @Test
+    void audioDeletionRequiresConfirmationAndCannotReplayOrCrossSenders() {
+        flow.interpreter = new FakeInterpreter("remove", 1, 0);
+        flow.handleNatural("a", "quita el audio uno");
+        assertTrue(drive.events.isEmpty());
+        flow.handle("b", "confirmar");
+        assertTrue(drive.events.isEmpty());
+        flow.handle("a", "confirmar");
+        assertEquals(List.of("trash:1"), drive.events);
+        flow.handle("a", "confirmar");
+        assertEquals(1, drive.events.size());
+    }
+
+    @Test
+    void cancellationAndCorrectionInvalidateOldDestructiveConfirmation() {
+        flow.interpreter = new FakeInterpreter("remove", 1, 0);
+        flow.handleNatural("a", "borra uno");
+        flow.handle("a", "cancelar");
+        flow.handle("a", "confirmar");
+        assertTrue(drive.events.isEmpty());
+        flow.handleNatural("a", "borra uno");
+        flow.interpreter = new FakeInterpreter("clarify", 0, 0);
+        flow.handleNatural("a", "no, la otra");
+        flow.handle("a", "confirmar");
+        assertTrue(drive.events.isEmpty());
+    }
+
+    @Test
+    void undoRestoresExactDeletedAudioAfterConfirmation() {
+        flow.interpreter = new FakeInterpreter("remove", 1, 0);
+        flow.handleNatural("a", "borra uno");
+        flow.handle("a", "confirmar");
+        flow.handle("a", "deshacer");
+        assertTrue(drive.trashed.contains("1"));
+        flow.handle("a", "confirmar");
+        assertFalse(drive.trashed.contains("1"));
+        assertEquals(List.of("trash:1", "restore:1"), drive.events);
+    }
+
+    @Test
+    void batchAdjustmentsWaitForConfirmationAndUseDistinctAmounts() {
+        flow.interpreter = new FakeInterpreter("tone", 0, 0) {
+            @Override public Interpretation interpret(String message, List<String> songs, int selected) {
+                return new Interpretation("tone_batch", 0, 0, List.of(new Adjustment(1, -2), new Adjustment(2, 1)));
+            }
+        };
+        flow.handleNatural("a", "baja uno dos semitonos y sube dos uno");
+        assertTrue(drive.events.isEmpty());
+        assertTrue(messages.last().contains("bajar 2"));
+        assertTrue(messages.last().contains("subir 1"));
+        flow.handle("a", "confirmar");
+        assertEquals(List.of(-2, 1), pitch.shifts);
+    }
+    @Test
+    void misclassifiedNoteDeletionNeverTrashesAudio() {
+        flow.interpreter = new FakeInterpreter("remove", 1, 0);
+        flow.handleNatural("a", "pero borra las notas de esa");
+        assertTrue(drive.events.isEmpty());
+        assertTrue(messages.last().contains("No borre el audio"));
+    }
+
+    @Test
+    void deletesOnlyTrackedNoteCopyAfterPitchChange() {
+        pipeline.workState.copied("Uno.mp3", "note-copy", "Uno.pdf", "notes");
+        drive.songs = List.of(new AudioFile("adjusted", "Uno (+2).mp3", 1L));
+        flow.interpreter = new FakeInterpreter("remove_notes", 1, 0);
+        flow.handleNatural("a", "borra las notas de esa");
+        assertTrue(drive.events.isEmpty());
+        flow.handle("a", "confirmar");
+        assertEquals(List.of("note:note-copy"), drive.events);
+        assertFalse(drive.trashed.contains("adjusted"));
+        assertTrue(messages.last().contains("audio sigue en la playlist"));
+        flow.interpreter = new FakeInterpreter("status_notes", 1, 0);
+        flow.handleNatural("a", "borraste las notas?");
+        assertTrue(messages.last().contains("enviadas a la papelera"));
+        assertEquals(1, drive.events.size());
+    }
+
+    @Test
+    void unknownOrWrongFolderNoteCopyFailsClosed() {
+        flow.interpreter = new FakeInterpreter("remove_notes", 1, 0);
+        flow.handleNatural("a", "borra sus notas");
+        assertTrue(drive.events.isEmpty());
+        pipeline.workState.copied("Uno.mp3", "historical", "Uno.pdf", "historico");
+        flow.handleNatural("a", "borra sus notas");
+        flow.handle("a", "confirmar");
+        assertTrue(drive.events.isEmpty());
+    }
+    @Test
     void addIngridToDocAndCorrectionNeverCopyNotes() {
         flow.interpreter = new FakeInterpreter("lyrics_song", 3, 0);
         flow.handleNatural("a", "agrega la de Ingrid al doc");
@@ -37,7 +151,7 @@ class PlaylistToneFlowTest {
         flow.interpreter = new FakeInterpreter("status_notes", 1, 0);
         flow.handleNatural("a", "la de ingrid ya subiste las notas?");
         assertTrue(messages.last().contains("Pendiente de elegir entre 2 versiones"));
-        assertTrue(messages.last().contains("En preparacion"));
+        assertFalse(messages.last().contains("Documento de letras"));
         assertTrue(drive.events.isEmpty());
         assertTrue(pipeline.notesRequests.isEmpty());
         assertEquals(0, pipeline.lyricsRequests);
@@ -343,6 +457,7 @@ class PlaylistToneFlowTest {
         flow.handleNatural("a", "elimina esa cancion de la playlist");
         assertEquals(3, ai.selected); // Dos, Tres, Uno (+2): el ID nuevo esta al final.
         assertEquals("Uno (+2).mp3", ai.names.get(2));
+        flow.handle("a", "confirmar");
         assertEquals(Set.of("1", "new-Uno (+2).mp3"), drive.trashed);
         assertTrue(messages.last().contains("se puede recuperar"));
     }
@@ -372,6 +487,7 @@ class PlaylistToneFlowTest {
         flow.interpreter = ai;
         flow.handleNatural("a", "la segunda");
         assertEquals("remove", ai.pendingAction);
+        flow.handle("a", "confirmar");
         assertEquals(Set.of("2"), drive.trashed);
         assertTrue(pitch.shifts.isEmpty());
     }
@@ -382,6 +498,7 @@ class PlaylistToneFlowTest {
         flow.handleNatural("a", "quita una cancion");
         drive.changed.add("2");
         flow.handle("a", "cancion 2");
+        flow.handle("a", "confirmar");
         assertTrue(drive.trashed.isEmpty());
         assertTrue(messages.last().contains("cambio"));
     }
@@ -511,6 +628,19 @@ class PlaylistToneFlowTest {
             if (failTrash) throw new IOException("Simulated trash failure");
             trashed.add(id);
         }
+        @Override public void trashNoteCopy(String id, String folder) {
+            assertEquals("notes", folder);
+            events.add("note:" + id);
+            trashed.add(id);
+        }
+        @Override public TrashedFile trashedSnapshot(String id, String folder) {
+            if (!trashed.contains(id)) throw new IllegalStateException();
+            return new TrashedFile(id, id + ".mp3", folder, 1L);
+        }
+        @Override public void restoreTrashed(TrashedFile file) {
+            if (!trashed.remove(file.id())) throw new IllegalStateException();
+            events.add("restore:" + file.id());
+        }
     }
 
     private static class FakePitch extends PitchShifter {
@@ -526,6 +656,11 @@ class PlaylistToneFlowTest {
     }
 
     private static class FakeWhatsApp extends WhatsAppService {
+        String token;
+        @Override public void confirmButtons(String to, String body, String token) {
+            this.token = token;
+            replyText(to, body);
+        }
         List<String> replies = new ArrayList<>();
         @Override public void replyText(String to, String body) { replies.add(body); }
         String last() { return replies.get(replies.size() - 1); }

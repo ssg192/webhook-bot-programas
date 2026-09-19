@@ -45,6 +45,9 @@ public class SongPipeline {
     @Inject LyricsHistoryService lyricsHistory;
     @Inject WhatsAppService whatsApp;
     @Inject PlaylistToneFlow playlistTone;
+    @Inject ContextStore contextStore;
+    @Inject ChordDraftService chordDrafts;
+    private final Set<String> draftsInProgress = ConcurrentHashMap.newKeySet();
 
     /** Numeros permitidos (formato SIN el 1: 52 + 10 digitos). Vacio = todos. */
     @ConfigProperty(name = "bot.allowed-numbers")
@@ -78,6 +81,22 @@ public class SongPipeline {
                     .map(choice -> Map.of("cancion", choice.song(), "versiones",
                             choice.versions().stream().map(NoteVersion::name).toList())).toList());
             return state;
+        }
+    }
+
+    void verifyNotes(List<String> songs, String notesFolder) {
+        if (driveService == null) return;
+        for (String song : songs) {
+            var copies = workState.copies(song);
+            if (copies.isEmpty()) continue;
+            try {
+                var present = new ArrayList<String>();
+                for (var copy : copies) {
+                    if (copy.folder().equals(notesFolder) && driveService.noteCopyPresent(copy.id(), notesFolder)) present.add(copy.name());
+                }
+                workState.note(song, present.isEmpty() ? "Las copias registradas ya no estan en Notas/"
+                        : "En Notas/: " + String.join(", ", present));
+            } catch (Exception e) { workState.note(song, "No pude verificar las copias en Drive ahora; resultado sin confirmar"); }
         }
     }
 
@@ -129,6 +148,7 @@ public class SongPipeline {
 
     void cancelNoteChoice(String from) {
         var pending = versionesPendientes.remove(from);
+        persistNoteChoices();
         if (pending != null) pending.choices().forEach(choice -> workState.note(choice.song(), "Eleccion de version cancelada; no se confirmo la copia"));
         synchronized (downloads) { afterDownloads.remove(from); }
     }
@@ -142,8 +162,17 @@ public class SongPipeline {
 
     @jakarta.annotation.PostConstruct
     void init() {
+        workState.attach(contextStore);
+        if (contextStore != null) {
+            var saved = contextStore.read("noteChoices", new com.fasterxml.jackson.core.type.TypeReference<Map<String, PendingNotes>>() {});
+            if (saved != null) saved.forEach((from, value) -> {
+                if (value.expires().isAfter(java.time.Instant.now()) && value.sunday().equals(Fechas.proximoDomingo())) versionesPendientes.put(from, value);
+            });
+        }
         downloadPool = Executors.newFixedThreadPool(Math.max(1, downloadConcurrency));
     }
+
+    private void persistNoteChoices() { if (contextStore != null) contextStore.save("noteChoices", versionesPendientes); }
 
     @jakarta.annotation.PreDestroy
     void shutdown() {
@@ -163,7 +192,7 @@ public class SongPipeline {
             });
 
     public void handleIncoming(WebhookPayload.Message msg) {
-        if (msg == null || !"text".equals(msg.type()) || msg.text() == null) return;
+        if (msg == null || msg.body() == null) return;
 
         synchronized (seenMessageIds) {
             if (!seenMessageIds.add(msg.id())) return; // ya procesado
@@ -181,8 +210,12 @@ public class SongPipeline {
             return;
         }
 
-        String body = msg.text().body();
+        String body = msg.body();
         if (whatsApp != null) whatsApp.rememberIncoming(from, body);
+        if (playlistTone != null && playlistTone.isConfirmation(body)) {
+            workers.submit(() -> playlistTone.handle(from, body));
+            return;
+        }
 
         // Los links tienen prioridad aunque el mensaje empiece con "notas" u otro comando.
         List<String> urls = downloader.extractYouTubeUrls(body).stream()
@@ -449,6 +482,7 @@ public class SongPipeline {
         List<String> requestedSongs = new ArrayList<>();
         try {
             versionesPendientes.remove(from);
+            persistNoteChoices();
             var domingo = Fechas.proximoDomingo();
             var carpeta = Fechas.nombreCarpeta(domingo);
             var estructura = driveService.ensureSundayStructure(domingo);
@@ -478,7 +512,8 @@ public class SongPipeline {
                     sinNotas.add(nombre);
                 } else if (variantes.size() == 1) {
                     var a = variantes.get(0);
-                    driveService.copyTo(a.id, a.name, estructura.notasId());
+                    var copy = driveService.copyTo(a.id, a.name, estructura.notasId());
+                    if (copy != null) workState.copied(nombre, copy.getId(), a.name, estructura.notasId());
                     workState.note(nombre, "Copiadas: " + a.name);
                     copiadas.add(nombre + " \u2192 " + a.name);
                 } else {
@@ -498,27 +533,70 @@ public class SongPipeline {
             if (!elecciones.isEmpty()) {
                 versionesPendientes.put(from, new PendingNotes(List.copyOf(elecciones), estructura.notasId(),
                         domingo, java.time.Instant.now().plusSeconds(1800)));
+                persistNoteChoices();
                 sb.append(sb.length() > 0 ? "\n" : "");
                 appendPreguntaDeVersion(sb, elecciones.get(0));
-                if (elecciones.size() > 1) {
-                    sb.append("\nCuando elijas esta, te preguntare la siguiente cancion.");
-                }
             }
             if (!sinNotas.isEmpty()) {
                 sb.append(sb.length() > 0 ? "\n" : "");
                 sb.append("Sin notas en el historico:\n");
                 sinNotas.forEach(s -> sb.append("\u2022 ").append(s).append('\n'));
-                sb.append("Si el archivo si existe, revisa que este en la carpeta *notas* de su fecha y se llame como la cancion (ej. \"En Ti E.pdf\" o \"En Ti TONO E.docx\") — renombralo, y con el proximo \"letras\" o \"notas\" ya aparece.\n");
+                if (chordDrafts != null && chordDrafts.available()) sb.append("Buscare una base de acordes en internet y preparare un borrador editable.\n");
+                else sb.append("La busqueda web no esta configurada; no generare notas sin fuentes.\n");
             }
-            sb.append("\nLas notas vienen del historico: revisa que correspondan a la version de esta semana.");
-            sb.append('\n').append(estructura.link());
             whatsApp.replyText(from, sb.toString());
+            if (chordDrafts != null && chordDrafts.available()) {
+                for (String song : sinNotas) createNoteDraft(from, song, "", estructura);
+            }
 
         } catch (Exception e) {
             requestedSongs.forEach(song -> workState.noteFailed(song));
             LOG.error("Error copiando notas", e);
             whatsApp.replyText(from, "No pude copiar las notas: " + e.getMessage());
         }
+    }
+
+    void requestNoteDraft(String from, String song, String targetKey) {
+        workers.submit(() -> {
+            try { createNoteDraft(from, song, targetKey, driveService.ensureSundayStructure(Fechas.proximoDomingo())); }
+            catch (Exception e) { whatsApp.replyText(from, "No pude preparar la carpeta para el borrador de notas."); }
+        });
+    }
+
+    void createNoteDraft(String from, String song, String targetKey, DriveService.EstructuraDomingo folder) {
+        if (chordDrafts == null || !chordDrafts.available()) {
+            whatsApp.replyText(from, "La investigacion web de notas no esta habilitada. Configura NOTES_WEB_ENABLED y TAVILY_API_KEY; tambien requiere Gemini.");
+            return;
+        }
+        String title = MusicWorkState.key(song);
+        String taskKey = folder.notasId() + ":" + title + ":" + targetKey;
+        if (!draftsInProgress.add(taskKey)) {
+            whatsApp.replyText(from, "Ya estoy investigando la base de " + title + "; te avisare cuando termine.");
+            return;
+        }
+        try {
+            String name = "BORRADOR - " + title.replaceAll("[\\\\/:*?\"<>|]", " ")
+                    + (targetKey.isEmpty() ? " - base web" : " - " + targetKey) + ".docx";
+            var existing = driveService.findFile(name, folder.notasId());
+            if (existing != null) {
+                workState.copied(title, existing.getId(), name, folder.notasId());
+                workState.note(title, "Borrador web disponible; revisar contra el audio");
+                whatsApp.replyText(from, "Ya hay un borrador de " + title + ". Conserve tus ediciones:\n" + existing.getWebViewLink());
+                return;
+            }
+            workState.note(title, "Investigando una base de acordes en internet");
+            whatsApp.replyText(from, "Buscando acordes y estructura de " + title + ". El resultado sera una base revisable, no una transcripcion del cover.");
+            var doc = chordDrafts.create(title, workState.reference(title), targetKey);
+            var uploaded = driveService.uploadBytes(name, doc.bytes(), DriveService.DOCX_MIME, folder.notasId());
+            workState.copied(title, uploaded.getId(), name, folder.notasId());
+            workState.note(title, "Borrador web creado" + (doc.key().isEmpty() ? " sin tonalidad confirmada" : " en " + doc.key()) + "; revisar contra la version del link");
+            whatsApp.replyText(from, "Notas de " + title + " encontradas en internet. Revisa el DOCX antes de usarlo.\n" + uploaded.getWebViewLink());
+        } catch (Exception e) {
+            workState.note(title, "No se completo la base web; no hay un borrador confirmado");
+            String reason = e instanceof GeminiSongInterpreter.Failure failure ? failure.userMessage()
+                    : e instanceof java.io.IOException || e instanceof IllegalArgumentException ? e.getMessage() : "No pude completar la investigacion o subir el documento";
+            whatsApp.replyText(from, "No pude crear la base de " + title + ": " + reason + ". Puedes aportar una fuente de acordes o confirmar la tonalidad de referencia.");
+        } finally { draftsInProgress.remove(taskKey); }
     }
 
     /** Copia la version indicada para la cancion pendiente y, si aplica, pregunta la siguiente. */
@@ -548,7 +626,8 @@ public class SongPipeline {
             }
             PendingNotes pending = versionesPendientes.get(from);
             var elegida = current.versions().get(selection - 1);
-            driveService.copyTo(elegida.id(), elegida.name(), pending.folderId());
+            var copy = driveService.copyTo(elegida.id(), elegida.name(), pending.folderId());
+            if (copy != null) workState.copied(current.song(), copy.getId(), elegida.name(), pending.folderId());
             workState.note(current.song(), "Copiadas: " + elegida.name());
 
             List<NoteChoice> restantes = pending.choices().subList(1, pending.choices().size());
@@ -566,6 +645,8 @@ public class SongPipeline {
         } catch (Exception e) {
             LOG.error("Error copiando version pendiente", e);
             whatsApp.replyText(from, "No pude copiar la version: " + e.getMessage());
+        } finally {
+            persistNoteChoices();
         }
     }
 
@@ -633,13 +714,15 @@ public class SongPipeline {
             var sb = new StringBuilder("Copiado a *Notas/*:\n");
             if (todas) {
                 for (var a : variantes) {
-                    driveService.copyTo(a.id, a.name, estructura.notasId());
+                    var copy = driveService.copyTo(a.id, a.name, estructura.notasId());
+                    if (copy != null) workState.copied(cancion, copy.getId(), a.name, estructura.notasId());
                     sb.append("\u2022 ").append(a.name).append('\n');
                     workState.note(cancion, "Versiones copiadas por peticion explicita");
                 }
             } else {
                 var a = variantes.get(seleccion - 1);
-                driveService.copyTo(a.id, a.name, estructura.notasId());
+                var copy = driveService.copyTo(a.id, a.name, estructura.notasId());
+                if (copy != null) workState.copied(cancion, copy.getId(), a.name, estructura.notasId());
                 workState.note(cancion, "Copiadas: " + a.name);
                 sb.append("\u2022 ").append(a.name).append('\n');
             }
@@ -666,6 +749,7 @@ public class SongPipeline {
             }
 
             var uploaded = driveService.uploadMp3(aSubir, estructura.playlistId());
+            workState.reference(aSubir.getFileName().toString(), url);
 
             // Version con tono: la original y variantes previas van a papelera
             if (semitones != 0) {

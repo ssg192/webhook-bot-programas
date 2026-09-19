@@ -11,6 +11,30 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.*;
 
 class GeminiSongInterpreterTest {
+    @Test void draftNotesAcceptsTargetKeyOnlyForOneIdentifiedSong() throws Exception {
+        var ai = new Stub();
+        String request = "{\"intent\":\"draft_notes\",\"song\":1,\"semitones\":0,\"targetKey\":\"D\"}";
+        assertEquals("D", ai.parse(request, 1).targetKey());
+        assertThrows(IOException.class, () -> ai.parse(request.replace("\"song\":1", "\"song\":0"), 1));
+        assertThrows(IOException.class, () -> ai.parse(request.replace("\"D\"", "\"H\""), 1));
+        assertThrows(IOException.class, () -> ai.parse(request.replace("draft_notes", "tone"), 1));
+    }
+    @Test
+    void batchSchemaRejectsDuplicateAmbiguousAndOutOfRangeAdjustments() throws Exception {
+        var ai = new Stub();
+        String valid = "{\"intent\":\"tone_batch\",\"song\":0,\"semitones\":0,\"adjustments\":[{\"song\":1,\"semitones\":-2},{\"song\":2,\"semitones\":1}]}";
+        assertEquals(2, ai.parse(valid, 2).adjustments().size());
+        assertThrows(IOException.class, () -> ai.parse(valid.replace("\"song\":2", "\"song\":1"), 2));
+        assertThrows(IOException.class, () -> ai.parse(valid.replace("\"semitones\":-2", "\"semitones\":0"), 2));
+        assertThrows(IOException.class, () -> ai.parse(valid, 1));
+    }
+    @Test
+    void notesRemovalRequiresSpecificSongWithoutPitch() throws Exception {
+        var ai = new Stub();
+        assertEquals("remove_notes", ai.parse("{\"intent\":\"remove_notes\",\"song\":1,\"semitones\":0}", 1).intent());
+        assertThrows(IOException.class, () -> ai.parse("{\"intent\":\"remove_notes\",\"song\":0,\"semitones\":0}", 1));
+        assertThrows(IOException.class, () -> ai.parse("{\"intent\":\"remove_notes\",\"song\":1,\"semitones\":2}", 1));
+    }
     @Test
     void selectedLyricsRequiresARealSongAndNoPitch() throws Exception {
         var ai = new Stub();

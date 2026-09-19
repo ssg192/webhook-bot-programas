@@ -5,6 +5,20 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class WhatsAppConversationTest {
     @Test
+    void confirmationUsesInteractiveReplyIdsAndOmitsNullText() throws Exception {
+        var json = new com.fasterxml.jackson.databind.ObjectMapper();
+        var data = json.readTree(json.writeValueAsString(GraphApiClient.OutgoingMessage.buttons("a", "¿Borro solo las notas?", "nonce")));
+        assertFalse(data.has("text"));
+        assertEquals("interactive", data.path("type").asText());
+        var buttons = data.path("interactive").path("action").path("buttons");
+        assertEquals(2, buttons.size());
+        assertEquals("confirm:nonce", buttons.path(0).path("reply").path("id").asText());
+        assertEquals("cancel:nonce", buttons.path(1).path("reply").path("id").asText());
+        var message = json.readValue("{\"id\":\"m\",\"from\":\"a\",\"type\":\"interactive\",\"interactive\":{\"type\":\"button_reply\",\"button_reply\":{\"id\":\"confirm:nonce\",\"title\":\"Confirmar\"}}}",
+                mx.salvador.wabot.webhook.WebhookPayload.Message.class);
+        assertEquals("confirm:nonce", message.body());
+    }
+    @Test
     void remembersBothSidesInOrderAndSeparatesSenders() {
         var service = new WhatsAppService();
         service.graphApi = (phone, token, message) -> {};

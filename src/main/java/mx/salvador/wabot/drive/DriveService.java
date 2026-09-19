@@ -153,6 +153,38 @@ public class DriveService {
                 .setSupportsAllDrives(true).execute();
     }
 
+    public record TrashedFile(String id, String name, String folder, Long version) {}
+
+    public TrashedFile trashedSnapshot(String id, String folder) throws Exception {
+        File file = drive.files().get(id).setSupportsAllDrives(true).setFields("id,name,parents,trashed,version").execute();
+        if (!Boolean.TRUE.equals(file.getTrashed()) || file.getParents() == null || !file.getParents().contains(folder))
+            throw new IllegalStateException("El archivo ya no esta en la papelera o cambio de carpeta");
+        return new TrashedFile(id, file.getName(), folder, file.getVersion());
+    }
+
+    public void restoreTrashed(TrashedFile expected) throws Exception {
+        var current = trashedSnapshot(expected.id(), expected.folder());
+        if (!java.util.Objects.equals(current.version(), expected.version())) throw new IllegalStateException("El archivo cambio desde la operacion");
+        drive.files().update(expected.id(), new File().setTrashed(false)).setSupportsAllDrives(true).execute();
+    }
+
+    public boolean noteCopyPresent(String id, String folder) throws Exception {
+        File file = drive.files().get(id).setSupportsAllDrives(true).setFields("parents,trashed").execute();
+        return !Boolean.TRUE.equals(file.getTrashed()) && file.getParents() != null && file.getParents().contains(folder);
+    }
+
+    /** Solo una copia identificada en Notas; nunca un audio ni el archivo del historico. */
+    public void trashNoteCopy(String fileId, String notesFolder) throws Exception {
+        File file = drive.files().get(fileId).setSupportsAllDrives(true)
+                .setFields("id,name,mimeType,parents,trashed").execute();
+        if (file.getParents() == null || !file.getParents().contains(notesFolder)
+                || esAudio(file.getName()) || file.getMimeType() == null
+                || !(file.getMimeType().equals("application/pdf") || file.getMimeType().equals(DOCX_MIME)
+                     || file.getMimeType().equals("application/msword")))
+            throw new IllegalStateException("No se confirmo una copia de notas en la carpeta esperada");
+        if (!Boolean.TRUE.equals(file.getTrashed())) trashFile(fileId);
+    }
+
     /** Sube un archivo desde bytes (p. ej. el docx de letras). */
     public File uploadBytes(String name, byte[] data, String mimeType, String parentId) throws Exception {
         File metadata = new File().setName(name).setParents(List.of(parentId));
