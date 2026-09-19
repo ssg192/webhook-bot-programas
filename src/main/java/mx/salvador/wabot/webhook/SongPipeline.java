@@ -148,7 +148,12 @@ public class SongPipeline {
                 .map(YtDlpDownloader::cleanUrl)
                 .distinct()
                 .toList();
-        if (urls.isEmpty()) return;
+        if (urls.isEmpty()) {
+            if (body != null && !body.isBlank() && playlistTone.naturalLanguageEnabled()) {
+                workers.submit(() -> playlistTone.handleNatural(from, body));
+            }
+            return;
+        }
 
         final int semitones = pitchShifter.parseSemitones(body);
 

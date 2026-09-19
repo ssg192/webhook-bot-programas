@@ -32,6 +32,7 @@ public class PlaylistToneFlow {
     @Inject DriveService drive;
     @Inject PitchShifter shifter;
     @Inject WhatsAppService whatsApp;
+    @Inject GeminiSongInterpreter interpreter;
 
     private record Pending(DriveService.EstructuraDomingo folder,
                            LocalDate sunday, List<AudioFile> songs, AudioFile selected,
@@ -76,7 +77,8 @@ public class PlaylistToneFlow {
             }
             var match = ADJUSTMENT.matcher(text);
             if (!match.matches()) {
-                askAmount(from, choice);
+                if (naturalLanguageEnabled()) handleNatural(from, body);
+                else askAmount(from, choice);
                 return;
             }
             int amount;
@@ -89,20 +91,81 @@ public class PlaylistToneFlow {
                 whatsApp.replyText(from, "Escribe subir o bajar y un numero del 1 al 12. Por ejemplo: subir 1 o bajar 2.");
                 return;
             }
-            // Consume la seleccion una sola vez, aun si llegan respuestas simultaneas.
-            if (!pending.remove(from, choice)) return;
-            whatsApp.replyText(from, "Ajustando " + choice.selected().name() + ", te aviso...");
             int semitones = amount * (match.group(1).equals("bajar") ? -1 : 1);
-            var result = new StringBuilder("• ")
-                    .append(replaceAudio(choice.selected(), choice.folder().playlistId(), semitones));
-            result.append("\n\n").append(choice.folder().link());
-            result.append("\n\nPara ajustar otra cancion, escribe cambiar tonalidad.");
-            whatsApp.replyText(from, result.toString());
+            apply(from, choice, semitones);
         } catch (IllegalArgumentException e) {
-            whatsApp.replyText(from, "Elige una sola cancion de la lista, por ejemplo: cancion 1. Cada cancion lleva su propio ajuste.");
+            if (naturalLanguageEnabled()) handleNatural(from, body);
+            else whatsApp.replyText(from, "Elige una sola cancion de la lista, por ejemplo: cancion 1. Cada cancion lleva su propio ajuste.");
         } catch (Exception e) {
             LOG.error("Error en seleccion de tono", e);
             whatsApp.replyText(from, "No pude preparar el cambio de tono. Vuelve a escribir cambiar tonalidad.");
+        }
+    }
+
+    private void apply(String from, Pending choice, int semitones) {
+        // Consume exactamente la seleccion interpretada; nunca una nueva o cancelada.
+        if (!pending.remove(from, choice)) return;
+        whatsApp.replyText(from, "Ajustando " + choice.selected().name() + ", te aviso...");
+        var result = new StringBuilder("• ")
+                .append(replaceAudio(choice.selected(), choice.folder().playlistId(), semitones));
+        result.append("\n\n").append(choice.folder().link());
+        result.append("\n\nPara ajustar otra cancion, escribe cambiar tonalidad.");
+        whatsApp.replyText(from, result.toString());
+    }
+
+    public boolean naturalLanguageEnabled() {
+        return interpreter.available();
+    }
+
+    /** Usa la misma seleccion y las mismas validaciones de archivos del flujo guiado. */
+    public void handleNatural(String from, String body) {
+        if (!naturalLanguageEnabled()) return;
+        try {
+            Pending previous = pending.get(from);
+            if (previous != null && (previous.expires().isBefore(Instant.now())
+                    || !previous.sunday().equals(Fechas.proximoDomingo()))) {
+                pending.remove(from, previous);
+                previous = null;
+            }
+            LocalDate sunday = previous == null ? Fechas.proximoDomingo() : previous.sunday();
+            var folder = previous == null ? drive.ensureSundayStructure(sunday) : previous.folder();
+            List<AudioFile> songs = previous == null ? drive.listAudioFiles(folder.playlistId()) : previous.songs();
+            if (songs.isEmpty()) {
+                whatsApp.replyText(from, "Aun no hay canciones. Envia el link de YouTube para agregar una.");
+                return;
+            }
+            if (previous == null) {
+                previous = new Pending(folder, sunday, songs, null, Instant.now().plusSeconds(1800));
+                if (pending.putIfAbsent(from, previous) != null) return;
+            }
+            int selected = previous == null || previous.selected() == null ? 0 : songs.indexOf(previous.selected()) + 1;
+            var result = interpreter.interpret(body, songs.stream().map(AudioFile::name).toList(), selected);
+            // Una respuesta tardia de la IA no debe sobreescribir un menu nuevo o cancelado.
+            if (pending.get(from) != previous) return;
+            if (result.intent().equals("unrelated")) {
+                whatsApp.replyText(from, "Para agregar canciones, envia sus links de YouTube. Para ajustar una, escribe cambiar tonalidad.");
+                return;
+            }
+            if (!result.intent().equals("tone") || result.song() == 0) {
+                whatsApp.replyText(from, "Necesito identificar una sola cancion y su ajuste. Elige una de la lista y luego indica subir o bajar y los semitonos.");
+                start(from);
+                return;
+            }
+            Pending choice = new Pending(folder, sunday, songs, songs.get(result.song() - 1),
+                    Instant.now().plusSeconds(1800));
+            boolean installed = previous == null ? pending.putIfAbsent(from, choice) == null
+                    : pending.replace(from, previous, choice);
+            if (!installed) return;
+            if (result.semitones() == 0) {
+                askAmount(from, choice);
+                return;
+            }
+            apply(from, choice, result.semitones());
+        } catch (Exception e) {
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+            // No registrar texto, respuesta del proveedor, credenciales ni datos del usuario.
+            LOG.warnf("No se pudo interpretar con Gemini (%s)", e.getClass().getSimpleName());
+            whatsApp.replyText(from, "No pude interpretar el mensaje ahora. Usa cambiar tonalidad, cancion 1 y luego subir 1 o bajar 2.");
         }
     }
 

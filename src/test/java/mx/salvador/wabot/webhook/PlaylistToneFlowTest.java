@@ -34,6 +34,7 @@ class PlaylistToneFlowTest {
         flow.drive = drive;
         flow.shifter = pitch;
         flow.whatsApp = messages;
+        flow.interpreter = new GeminiSongInterpreter(); // Desactivado por defecto.
     }
 
     @Test
@@ -171,6 +172,97 @@ class PlaylistToneFlowTest {
         assertEquals("Uno.mp3", PlaylistToneFlow.adjustedName("Uno (-2).mp3", 2));
         assertEquals("Uno (-3).mp3", PlaylistToneFlow.adjustedName("Uno (-2).mp3", -1));
         assertEquals("Uno (vivo) (+2).m4a", PlaylistToneFlow.adjustedName("Uno (vivo).m4a", 2));
+    }
+
+    @Test
+    void naturalInstructionUsesExistingSongAndSafeReplacement() {
+        var ai = new FakeInterpreter("tone", 2, -2);
+        flow.interpreter = ai;
+        flow.handleNatural("a", "bajale dos a la segunda");
+        assertEquals(List.of(-2), pitch.shifts);
+        assertEquals(Set.of("2"), drive.trashed);
+        assertEquals(List.of("Uno.mp3", "Dos.mp3", "Tres.m4a"), ai.names);
+    }
+
+    @Test
+    void naturalFollowupReceivesSelectedSongContext() {
+        var ai = new FakeInterpreter("tone", 3, 1);
+        flow.interpreter = ai;
+        flow.handle("a", "cambiar tonalidad");
+        flow.handle("a", "cancion 3");
+        flow.handleNatural("a", "subela un semitono");
+        assertEquals(3, ai.selected);
+        assertEquals(Set.of("3"), drive.trashed);
+    }
+
+    @Test
+    void ambiguousOrMultipleNaturalTargetsDoNotChangeAudio() {
+        flow.interpreter = new FakeInterpreter("clarify", 0, 0);
+        flow.handleNatural("a", "baja la primera y sube la otra");
+        assertTrue(drive.events.isEmpty());
+        assertTrue(messages.last().contains("¿A que cancion"));
+    }
+
+    @Test
+    void naturalSelectionWithoutAmountAsksBeforeChanging() {
+        flow.interpreter = new FakeInterpreter("tone", 2, 0);
+        flow.handleNatural("a", "quiero cambiar la segunda");
+        assertTrue(drive.events.isEmpty());
+        assertTrue(messages.last().contains("Dos.mp3"));
+        flow.handle("a", "bajar 1");
+        assertEquals(Set.of("2"), drive.trashed);
+    }
+
+    @Test
+    void providerFailureKeepsManualCommandsAndSelectionWorking() {
+        var ai = new FakeInterpreter("tone", 1, -2);
+        ai.fail = true;
+        flow.interpreter = ai;
+        flow.handle("a", "cambiar tonalidad");
+        flow.handle("a", "cancion 1");
+        flow.handleNatural("a", "bajala dos");
+        assertTrue(drive.events.isEmpty());
+        assertTrue(messages.last().contains("No pude interpretar"));
+        flow.handle("a", "bajar 2");
+        assertEquals(List.of(-2), pitch.shifts);
+    }
+
+    @Test
+    void cancellationDuringInterpretationDoesNotApplyOldResult() {
+        var ai = new FakeInterpreter("tone", 1, -2);
+        ai.duringInterpret = () -> flow.handle("a", "cancelar");
+        flow.interpreter = ai;
+        flow.handle("a", "cambiar tonalidad");
+        flow.handleNatural("a", "bajala dos");
+        assertTrue(drive.events.isEmpty());
+    }
+
+    @Test
+    void standaloneNaturalRequestCanAlsoBeCancelledWhileWaitingForProvider() {
+        var ai = new FakeInterpreter("tone", 1, -2);
+        ai.duringInterpret = () -> flow.handle("a", "cancelar");
+        flow.interpreter = ai;
+        flow.handleNatural("a", "bajale dos a la primera");
+        assertTrue(drive.events.isEmpty());
+    }
+
+    private static class FakeInterpreter extends GeminiSongInterpreter {
+        final Interpretation result;
+        int selected;
+        List<String> names;
+        boolean fail;
+        Runnable duringInterpret;
+        FakeInterpreter(String intent, int song, int semitones) {
+            result = new Interpretation(intent, song, semitones);
+        }
+        @Override public boolean available() { return true; }
+        @Override public Interpretation interpret(String message, List<String> songs, int selected) throws Exception {
+            this.names = songs;
+            this.selected = selected;
+            if (duringInterpret != null) duringInterpret.run();
+            if (fail) throw new IOException("Simulated quota limit");
+            return result;
+        }
     }
 
     private static class FakeDrive extends DriveService {

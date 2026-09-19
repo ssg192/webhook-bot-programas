@@ -88,6 +88,26 @@ la subida, conserva el anterior. Puedes escribir `cancelar` antes de iniciar el
 procesamiento; las selecciones caducan después de 30 minutos o al reiniciar el bot.
 También sigue funcionando mandar un link de YouTube acompañado de `tono -2`.
 
+## Lenguaje natural con Gemini (opcional)
+
+Activa `GEMINI_ENABLED=true` y configura `GEMINI_API_KEY` como secreto en el
+servidor. `GEMINI_MODEL` usa `gemini-2.5-flash-lite` por defecto. No guardes la
+clave en Git. Sin estas variables, los comandos funcionan sin IA.
+
+Puedes escribir «bájale dos semitonos a la de Ingrid», «la segunda» o «súbela
+un semitono» mientras eliges una canción. Se trabaja una canción por petición:
+si faltan datos o hay ambigüedad, el bot pide elegir una canción y su ajuste.
+Para **agregar canciones se siguen enviando links de YouTube**; Gemini sólo
+interpreta instrucciones sobre la playlist existente.
+
+Se envían a Google el mensaje, los nombres de los audios y el índice seleccionado;
+no se envían audios, IDs de Drive, teléfonos ni el historial completo del chat.
+El nivel gratuito tiene límites y Google puede usar su contenido para mejorar
+productos; consulta [los precios y condiciones](https://ai.google.dev/gemini-api/docs/pricing).
+Usa un proyecto sin facturación habilitada si quieres evitar cargos: el bot no
+puede comprobar tu plan. Ante cuota agotada, timeout o respuesta inválida, se
+mantienen los comandos guiados; no se cambia automáticamente a otro modelo.
+
 ## Producción en la Mac (launchd)
 
 ```bash
