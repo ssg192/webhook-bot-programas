@@ -12,6 +12,28 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class GeminiSongInterpreterTest {
     @Test
+    void selectedLyricsRequiresARealSongAndNoPitch() throws Exception {
+        var ai = new Stub();
+        assertEquals("lyrics_song", ai.parse("{\"intent\":\"lyrics_song\",\"song\":1,\"semitones\":0}", 1).intent());
+        assertThrows(IOException.class, () -> ai.parse("{\"intent\":\"lyrics_song\",\"song\":0,\"semitones\":0}", 1));
+        assertThrows(IOException.class, () -> ai.parse("{\"intent\":\"lyrics_song\",\"song\":2,\"semitones\":0}", 1));
+        assertThrows(IOException.class, () -> ai.parse("{\"intent\":\"lyrics_song\",\"song\":1,\"semitones\":2}", 1));
+    }
+    @Test
+    void validatesReadOnlyStatusAndIncludesWorkContext() throws Exception {
+        var ai = new Stub();
+        for (String intent : List.of("status", "status_notes", "status_lyrics")) {
+            assertEquals(intent, ai.parse("{\"intent\":\"" + intent + "\",\"song\":1,\"semitones\":0}", 1).intent());
+            assertThrows(IOException.class, () -> ai.parse("{\"intent\":\"" + intent + "\",\"song\":1,\"semitones\":2}", 1));
+        }
+        ai.interpret("ya estan?", List.of("Ingrid"), 1, List.of(), "tone", null,
+                Map.of("documentoLetras", "En preparacion", "descargasPendientes", 2));
+        var payload = ai.json.readTree(ai.request);
+        var data = ai.json.readTree(payload.path("contents").path(0).path("parts").path(0).path("text").asText());
+        assertEquals(2, data.path("contexto").path("estadoTrabajo").path("descargasPendientes").asInt());
+        assertEquals("En preparacion", data.path("contexto").path("estadoTrabajo").path("documentoLetras").asText());
+    }
+    @Test
     void noteVersionUsesPendingMenuBoundsNotPlaylistBounds() throws Exception {
         var ai = new Stub();
         String response = "{\"intent\":\"note_version\",\"song\":3,\"semitones\":0}";

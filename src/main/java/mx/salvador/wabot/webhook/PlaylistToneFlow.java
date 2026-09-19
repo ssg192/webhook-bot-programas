@@ -71,7 +71,6 @@ public class PlaylistToneFlow {
 
     public void rememberUpload(String from, String id) {
         pending.remove(from);
-        histories.remove(from);
         rememberSong(from, id);
     }
 
@@ -191,15 +190,11 @@ public class PlaylistToneFlow {
             }
             LocalDate sunday = previous == null ? Fechas.proximoDomingo() : previous.sunday();
             var folder = previous == null ? drive.ensureSundayStructure(sunday) : previous.folder();
-            List<AudioFile> songs = previous == null ? drive.listAudioFiles(folder.playlistId()) : previous.songs();
+            List<AudioFile> songs = drive.listAudioFiles(folder.playlistId());
             if (uploadedIds != null) {
                 // "La segunda" en un mensaje con links sigue el orden de esos links.
                 Map<String, AudioFile> byId = songs.stream().collect(java.util.stream.Collectors.toMap(AudioFile::id, song -> song));
                 songs = uploadedIds.stream().map(byId::get).filter(java.util.Objects::nonNull).toList();
-            }
-            if (songs.isEmpty()) {
-                whatsApp.replyText(from, "Aun no hay canciones. Envia el link de YouTube para agregar una.");
-                return;
             }
             if (previous == null) {
                 previous = new Pending(folder, sunday, songs, null, Instant.now().plusSeconds(1800));
@@ -208,9 +203,16 @@ public class PlaylistToneFlow {
             int selected = previous.selected() == null ? recentSelection(from, songs) : songs.indexOf(previous.selected()) + 1;
             var noteChoice = uploadedIds == null ? pipeline.pendingNoteChoice(from) : null;
             var names = songs.stream().map(AudioFile::name).toList();
-            var result = noteChoice == null
-                    ? interpreter.interpret(body, names, selected, history(from), uploadedIds == null ? previous.action() : "after_upload")
-                    : interpreter.interpret(body, names, selected, history(from), "note_version", noteChoice);
+            var result = interpreter.interpret(body, names, selected, history(from),
+                    noteChoice != null ? "note_version" : uploadedIds == null ? previous.action() : "after_upload",
+                    noteChoice, pipeline.context(from, names));
+            if (List.of("status", "status_notes", "status_lyrics").contains(result.intent())) {
+                // Consulta sin efectos sobre archivos ni preguntas pendientes. No espera al indice de letras.
+                rememberMessage(from, body);
+                if (result.song() > 0) rememberSong(from, songs.get(result.song() - 1).id());
+                whatsApp.replyText(from, MusicWorkState.describe(pipeline.context(from, names), result.intent(), result.song()));
+                return;
+            }
             // Una respuesta tardia de la IA no debe sobreescribir un menu nuevo o cancelado.
             if (pending.get(from) != previous) return;
             if (noteChoice != null && pipeline.pendingNoteChoice(from) != noteChoice) return;
@@ -243,13 +245,20 @@ public class PlaylistToneFlow {
                 if (!pending.remove(from, previous)) return;
                 whatsApp.replyText(from, "Voy a buscar las notas y preparar el documento de letras de las canciones de la playlist.");
                 // Cada flujo informa su resultado y maneja sus errores de forma independiente.
-                pipeline.generarNotas(from, null);
-                pipeline.generarLetras(from);
+                pipeline.requestDocuments(from, true, true, null);
                 return;
             }
             if (result.intent().equals("lyrics")) {
                 if (!pending.remove(from, previous)) return;
-                pipeline.generarLetras(from);
+                pipeline.requestDocuments(from, false, true, null);
+                return;
+            }
+            if (result.intent().equals("lyrics_song")) {
+                if (!pending.remove(from, previous)) return;
+                var song = songs.get(result.song() - 1);
+                rememberSong(from, song.id());
+                whatsApp.replyText(from, "Voy a agregar al documento de letras: " + song.name() + ". Conservare el contenido que ya tiene.");
+                pipeline.requestDocuments(from, false, true, song.name());
                 return;
             }
             if (result.intent().equals("unrelated")) {
@@ -262,7 +271,11 @@ public class PlaylistToneFlow {
             }
             if (result.intent().equals("notes")) {
                 if (!pending.remove(from, previous)) return;
-                pipeline.generarNotas(from, result.song() == 0 ? null : songs.get(result.song() - 1).name());
+                pipeline.requestDocuments(from, true, false, result.song() == 0 ? null : songs.get(result.song() - 1).name());
+                return;
+            }
+            if (result.intent().equals("clarify")) {
+                whatsApp.replyText(from, "¿A cual cancion o tarea te refieres? Dime el titulo y si quieres consultar su estado o hacer un cambio.");
                 return;
             }
             if (result.intent().equals("remove")) {

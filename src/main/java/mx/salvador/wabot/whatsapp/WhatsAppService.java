@@ -8,6 +8,29 @@ import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class WhatsAppService {
+    private record Conversation(java.util.List<java.util.Map<String, String>> messages, java.time.Instant expires) {}
+    private final java.util.Map<String, Conversation> conversations = new java.util.concurrent.ConcurrentHashMap<>();
+
+    public void rememberIncoming(String from, String body) { remember(from, "user", body); }
+
+    private void remember(String from, String role, String body) {
+        if (body == null || body.isBlank()) return;
+        conversations.entrySet().removeIf(e -> e.getValue().expires().isBefore(java.time.Instant.now()));
+        if (conversations.size() >= 1000 && !conversations.containsKey(from)) return;
+        conversations.compute(from, (key, previous) -> {
+            var messages = new java.util.ArrayList<java.util.Map<String, String>>();
+            if (previous != null) messages.addAll(previous.messages());
+            messages.add(java.util.Map.of("role", role, "text", body.substring(0, Math.min(2500, body.length()))));
+            while (messages.size() > 16) messages.remove(0);
+            return new Conversation(java.util.List.copyOf(messages), java.time.Instant.now().plusSeconds(1800));
+        });
+    }
+
+    public java.util.List<java.util.Map<String, String>> conversation(String from) {
+        var value = conversations.get(from);
+        if (value == null || value.expires().isBefore(java.time.Instant.now())) return java.util.List.of();
+        return value.messages();
+    }
 
     private static final Logger LOG = Logger.getLogger(WhatsAppService.class);
 
@@ -25,6 +48,7 @@ public class WhatsAppService {
         try {
             graphApi.sendMessage(phoneNumberId, "Bearer " + accessToken,
                     GraphApiClient.OutgoingMessage.text(to, body));
+            remember(to, "assistant", body);
         } catch (Exception e) {
             LOG.errorf(e, "Error enviando mensaje a %s", to);
         }

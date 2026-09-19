@@ -139,6 +139,10 @@ class SongPipelineInstructionsTest {
     }
 
     private class TestPipeline extends SongPipeline {
+        @Override void requestDocuments(String from, boolean notes, boolean lyrics, String song) {
+            if (notes) generarNotas(from, song);
+            if (lyrics) generarLetras(from);
+        }
         final CountDownLatch documentsDone = new CountDownLatch(1);
         @Override void generarNotas(String from, String selected) { events.add("notes"); }
         @Override void generarLetras(String from) {
@@ -192,6 +196,10 @@ class SongPipelineInstructionsTest {
         List<String> names;
         String intent = "notes_lyrics";
         @Override public boolean available() { return enabledForTest; }
+        @Override public Interpretation interpret(String message, List<String> names, int selected,
+                List<String> history, String action, SongPipeline.NoteChoice choice, java.util.Map<String, Object> state) {
+            return interpret(message, names, selected, history, action);
+        }
         @Override public Interpretation interpret(String message, List<String> names, int selected,
                                                  List<String> history, String pendingAction) {
             calls++;

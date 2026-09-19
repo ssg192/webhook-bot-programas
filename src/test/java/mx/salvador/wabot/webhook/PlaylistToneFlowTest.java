@@ -20,6 +20,49 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 
 class PlaylistToneFlowTest {
+    @Test
+    void addIngridToDocAndCorrectionNeverCopyNotes() {
+        flow.interpreter = new FakeInterpreter("lyrics_song", 3, 0);
+        flow.handleNatural("a", "agrega la de Ingrid al doc");
+        flow.handleNatural("a", "al docx");
+        assertEquals(List.of("Tres.m4a", "Tres.m4a"), pipeline.selectedLyrics);
+        assertTrue(pipeline.notesRequests.isEmpty());
+        assertTrue(drive.events.isEmpty());
+    }
+    @Test
+    void questionAboutIngridReportsNotesWithoutGeneratingAnything() {
+        drive.songs = List.of(new AudioFile("ingrid", "Ingrid Rosario - Que se llene tu casa.m4a", 1L));
+        pipeline.workState.note(drive.songs.get(0).name(), "Pendiente de elegir entre 2 versiones");
+        pipeline.workState.document("En preparacion");
+        flow.interpreter = new FakeInterpreter("status_notes", 1, 0);
+        flow.handleNatural("a", "la de ingrid ya subiste las notas?");
+        assertTrue(messages.last().contains("Pendiente de elegir entre 2 versiones"));
+        assertTrue(messages.last().contains("En preparacion"));
+        assertTrue(drive.events.isEmpty());
+        assertTrue(pipeline.notesRequests.isEmpty());
+        assertEquals(0, pipeline.lyricsRequests);
+    }
+
+    @Test
+    void statusIncludesSongUploadedAfterAnEarlierMenu() {
+        flow.handle("a", "cambiar tonalidad");
+        drive.songs = List.of(new AudioFile("new", "Ingrid.m4a", 1L));
+        flow.interpreter = new FakeInterpreter("status_notes", 1, 0);
+        flow.handleNatural("a", "y las notas de ingrid?");
+        assertTrue(messages.last().contains("Ingrid.m4a"));
+        assertTrue(messages.last().contains("No se ha confirmado"));
+        assertTrue(drive.events.isEmpty());
+    }
+
+    @Test
+    void statusQueryDoesNotConsumePendingToneChoice() {
+        flow.handle("a", "cambiar tonalidad");
+        flow.handle("a", "cancion 1");
+        flow.interpreter = new FakeInterpreter("status", 0, 0);
+        flow.handleNatural("a", "como vas?");
+        flow.handle("a", "bajar 2");
+        assertEquals(Set.of("1"), drive.trashed);
+    }
     private PlaylistToneFlow flow;
     private FakeDrive drive;
     private FakePitch pitch;
@@ -203,7 +246,7 @@ class PlaylistToneFlowTest {
         flow.interpreter = new FakeInterpreter("clarify", 0, 0);
         flow.handleNatural("a", "baja la primera y sube la otra");
         assertTrue(drive.events.isEmpty());
-        assertTrue(messages.last().contains("¿A que cancion"));
+        assertTrue(messages.last().contains("¿A cual cancion o tarea"));
     }
 
     @Test
@@ -390,6 +433,11 @@ class PlaylistToneFlowTest {
     }
 
     private static class FakePipeline extends SongPipeline {
+        @Override void requestDocuments(String from, boolean notes, boolean lyrics, String song) {
+            if (notes) generarNotas(from, song);
+            if (lyrics) { if (song != null) selectedLyrics.add(song); generarLetras(from); }
+        }
+        List<String> selectedLyrics = new ArrayList<>();
         List<String> notesRequests = new ArrayList<>();
         int lyricsRequests;
         @Override void generarNotas(String from, String selectedSong) { notesRequests.add(selectedSong); }
@@ -408,6 +456,10 @@ class PlaylistToneFlowTest {
             result = new Interpretation(intent, song, semitones);
         }
         @Override public boolean available() { return true; }
+        @Override public Interpretation interpret(String message, List<String> songs, int selected,
+                List<String> history, String action, SongPipeline.NoteChoice choice, java.util.Map<String, Object> state) throws Exception {
+            return interpret(message, songs, selected, history, action);
+        }
         @Override public Interpretation interpret(String message, List<String> songs, int selected,
                                                    List<String> previousMessages, String pendingAction) throws Exception {
             this.previousMessages = previousMessages;

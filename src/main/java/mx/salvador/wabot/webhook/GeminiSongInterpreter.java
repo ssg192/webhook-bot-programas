@@ -74,13 +74,19 @@ public class GeminiSongInterpreter {
     public Interpretation interpret(String message, List<String> songs, int selected,
                                     List<String> previousMessages, String pendingAction,
                                     SongPipeline.NoteChoice noteChoice) throws Exception {
+        return interpret(message, songs, selected, previousMessages, pendingAction, noteChoice, Map.of());
+    }
+
+    public Interpretation interpret(String message, List<String> songs, int selected,
+                                    List<String> previousMessages, String pendingAction,
+                                    SongPipeline.NoteChoice noteChoice, Map<String, Object> state) throws Exception {
         if (!available()) throw new IOException("Gemini desactivado");
         if (message == null || message.isBlank() || message.length() > 1500 || songs.size() > 100
                 || songs.stream().mapToInt(String::length).sum() > 16000) {
             throw new IOException("Solicitud fuera de limites");
         }
         var schema = Map.of("type", "OBJECT", "properties", Map.of(
-                "intent", Map.of("type", "STRING", "enum", List.of("note_version", "tone", "tone_notes", "notes", "lyrics", "notes_lyrics", "list", "remove", "cancel", "clarify", "unrelated")),
+                "intent", Map.of("type", "STRING", "enum", List.of("lyrics_song", "status", "status_notes", "status_lyrics", "note_version", "tone", "tone_notes", "notes", "lyrics", "notes_lyrics", "list", "remove", "cancel", "clarify", "unrelated")),
                 "song", Map.of("type", "INTEGER"),
                 "semitones", Map.of("type", "INTEGER")),
                 "required", List.of("intent", "song", "semitones"));
@@ -92,6 +98,27 @@ public class GeminiSongInterpreter {
                 cortas, pero ejecuta SOLO lo pedido ahora: no repitas acciones de mensajes anteriores.
                 Acepta lenguaje coloquial, sinonimos, errores de ortografia y frases incompletas.
                 Interpreta el significado, no busques frases exactas ni palabras clave obligatorias.
+                contexto.estadoTrabajo contiene hechos sobre canciones, notas, letras y descargas pendientes.
+                estadoTrabajo.conversacion incluye mensajes del usuario Y respuestas recientes del bot,
+                con roles. Usalos para resolver referencias al documento que el bot entrego o a su pregunta.
+                Una correccion como 'al docx', 'no, al documento de letras' sustituye el destino de
+                la peticion anterior: no repitas la operacion equivocada de copiar notas.
+                'doc', 'docx', 'documento de letras' tras entregar letras se refieren a ESE documento.
+                'agrega la de Ingrid al doc' => lyrics_song, song=indice de la cancion de Ingrid,
+                semitones=0. 'al docx' despues de esa peticion tambien => lyrics_song de esa cancion.
+                lyrics_song agrega solo esa cancion al documento existente conservando su contenido.
+                Si falta identificar cual o hay varias de Ingrid, clarify. No elijas una version de notas
+                cuando el usuario esta corrigiendo el destino hacia el documento de letras.
+                Una CONSULTA de estado NO es una orden de crear ni copiar archivos.
+                'la de Ingrid ya subiste las notas?', 'estan las notas de esa?' => status_notes.
+                'ya esta la letra?', 'terminaste el documento?' => status_lyrics.
+                'que falta?', 'como vas?', 'que tienes?' => status.
+                Estos intents llevan semitones=0; song es la cancion consultada o 0 para estado general.
+                Resuelve artista/titulo/posicion con la playlist y mensajes anteriores.
+                Si menciona un artista con varias canciones y no se puede resolver cual, devuelve clarify.
+                'y las de Ingrid?' tras hablar de notas consulta status_notes; NO cambia el tono.
+                Si pide explicitamente 'busca/copia/crea las notas' usa notes, no status_notes.
+                Nunca conviertas una pregunta de estado en una operacion que modifique archivos.
                 Si contexto contiene versionesNotas, hay una pregunta pendiente sobre versiones de NOTAS.
                 Respuestas como 'la segunda', '2', 'version la version 2.' o un nombre de archivo
                 eligen esa version: intent=note_version, song=indice 1-based de versionesNotas,
@@ -147,6 +174,7 @@ public class GeminiSongInterpreter {
         Map<String, Object> context = new java.util.LinkedHashMap<>();
         context.put("mensajesAnteriores", previousMessages);
         context.put("accionPendiente", pendingAction);
+        context.put("estadoTrabajo", state);
         if (noteChoice != null) {
             context.put("cancionNotas", noteChoice.song());
             context.put("versionesNotas", noteChoice.versions().stream().map(SongPipeline.NoteVersion::name).toList());
@@ -201,13 +229,17 @@ public class GeminiSongInterpreter {
         String intent = result.path("intent").asText();
         int song = result.path("song").intValue();
         int semitones = result.path("semitones").intValue();
+        if (intent.equals("lyrics_song")) {
+            if (song < 1 || song > songCount || semitones != 0) throw new IOException("Cancion de letras fuera de limites");
+            return new Interpretation(intent, song, 0);
+        }
         if (intent.equals("note_version")) {
             if (song < 1 || song > versionCount || semitones != 0) throw new IOException("Version fuera de limites");
             return new Interpretation(intent, song, 0);
         }
-        if (!List.of("tone", "tone_notes", "notes", "lyrics", "notes_lyrics", "list", "remove", "cancel", "clarify", "unrelated").contains(intent)
+        if (!List.of("status", "status_notes", "status_lyrics", "tone", "tone_notes", "notes", "lyrics", "notes_lyrics", "list", "remove", "cancel", "clarify", "unrelated").contains(intent)
                 || song < 0 || song > songCount || semitones < -12 || semitones > 12
-                || (List.of("notes", "remove").contains(intent) && semitones != 0)
+                || (List.of("status", "status_notes", "status_lyrics", "notes", "remove").contains(intent) && semitones != 0)
                 || (List.of("lyrics", "notes_lyrics", "list", "cancel", "clarify", "unrelated").contains(intent) && (song != 0 || semitones != 0))) {
             throw new IOException("Interpretacion fuera de limites");
         }

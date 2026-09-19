@@ -60,6 +60,56 @@ public class SongPipeline {
     private final ExecutorService workers = Executors.newFixedThreadPool(2);
     private final java.util.concurrent.ScheduledExecutorService progress = Executors.newSingleThreadScheduledExecutor();
     private final Set<String> lyricsInProgress = ConcurrentHashMap.newKeySet();
+    final MusicWorkState workState = new MusicWorkState();
+    private final Map<String, java.util.concurrent.atomic.AtomicInteger> downloads = new ConcurrentHashMap<>();
+    private final Map<String, List<Runnable>> afterDownloads = new ConcurrentHashMap<>();
+    // Las consultas cortas no deben esperar en la cola de descargas/documentos.
+    private final ExecutorService conversations = Executors.newFixedThreadPool(2);
+
+    Map<String, Object> context(String from, List<String> songs) {
+        synchronized (downloads) {
+            var count = downloads.get(from);
+            Map<String, Object> state = new LinkedHashMap<>(workState.snapshot(songs, count == null ? 0 : count.get()));
+            state.put("peticionesDocumentosEnEspera", afterDownloads.getOrDefault(from, List.of()).size());
+            state.put("conversacion", whatsApp == null ? List.of() : whatsApp.conversation(from));
+            pendingNoteChoice(from); // Descarta menus vencidos antes de formar el contexto.
+            var pending = versionesPendientes.get(from);
+            state.put("preguntasNotasPendientes", pending == null ? List.of() : pending.choices().stream()
+                    .map(choice -> Map.of("cancion", choice.song(), "versiones",
+                            choice.versions().stream().map(NoteVersion::name).toList())).toList());
+            return state;
+        }
+    }
+
+    void requestDocuments(String from, boolean notes, boolean lyrics, String song) {
+        Runnable task = () -> {
+            if (notes) generarNotas(from, song);
+            if (lyrics) {
+                if (song == null) generarLetras(from);
+                else generarLetras(from, song);
+            }
+        };
+        synchronized (downloads) {
+            var count = downloads.get(from);
+            if (count != null && count.get() > 0) {
+                afterDownloads.computeIfAbsent(from, ignored -> new ArrayList<>()).add(task);
+                whatsApp.replyText(from, "Recibi tu peticion de documentos. Esperare a que terminen las descargas pendientes para incluir esas canciones.");
+                return;
+            }
+            workers.submit(task);
+        }
+    }
+
+    private void downloadFinished(String from, int size) {
+        synchronized (downloads) {
+            var count = downloads.get(from);
+            if (count.addAndGet(-size) == 0) {
+                downloads.remove(from);
+                var tasks = afterDownloads.remove(from);
+                if (tasks != null) tasks.forEach(workers::submit);
+            }
+        }
+    }
     /** Canciones con versiones pendientes de elegir, por numero de WhatsApp. */
     record NoteVersion(String id, String name) {}
     record NoteChoice(String song, List<NoteVersion> versions) {}
@@ -77,7 +127,11 @@ public class SongPipeline {
         return pending.choices().get(0);
     }
 
-    void cancelNoteChoice(String from) { versionesPendientes.remove(from); }
+    void cancelNoteChoice(String from) {
+        var pending = versionesPendientes.remove(from);
+        if (pending != null) pending.choices().forEach(choice -> workState.note(choice.song(), "Eleccion de version cancelada; no se confirmo la copia"));
+        synchronized (downloads) { afterDownloads.remove(from); }
+    }
 
     /**
      * Descargas de canciones en paralelo. El 80% del tiempo por cancion es
@@ -94,6 +148,7 @@ public class SongPipeline {
     @jakarta.annotation.PreDestroy
     void shutdown() {
         workers.shutdown();
+        conversations.shutdown();
         progress.shutdownNow();
         if (downloadPool != null) downloadPool.shutdown();
     }
@@ -127,6 +182,7 @@ public class SongPipeline {
         }
 
         String body = msg.text().body();
+        if (whatsApp != null) whatsApp.rememberIncoming(from, body);
 
         // Los links tienen prioridad aunque el mensaje empiece con "notas" u otro comando.
         List<String> urls = downloader.extractYouTubeUrls(body).stream()
@@ -138,7 +194,13 @@ public class SongPipeline {
                     : "Descargando %d cancion(es) y ajustando tono %s%d, te aviso..."
                     .formatted(urls.size(), semitones > 0 ? "+" : "", semitones);
             whatsApp.replyText(from, aviso);
-            workers.submit(() -> process(from, urls, semitones, body));
+            synchronized (downloads) {
+                downloads.computeIfAbsent(from, ignored -> new java.util.concurrent.atomic.AtomicInteger()).addAndGet(urls.size());
+            }
+            workers.submit(() -> {
+                try { process(from, urls, semitones, body); }
+                finally { downloadFinished(from, urls.size()); }
+            });
             return;
         }
 
@@ -154,7 +216,7 @@ public class SongPipeline {
         // La pregunta pendiente tambien da contexto a "la segunda", "2" o un nombre de archivo.
         if (body != null && pendingNoteChoice(from) != null && playlistTone.naturalLanguageEnabled()
                 && !body.strip().matches("(?i)^(letras|notas|indexar|cancelar|cambiar tonalidad)$")) {
-            workers.submit(() -> playlistTone.handleNatural(from, body));
+            conversations.submit(() -> playlistTone.handleNatural(from, body));
             return;
         }
 
@@ -165,7 +227,7 @@ public class SongPipeline {
 
         // Comando: generar el doc de letras del domingo
         if (body != null && body.strip().equalsIgnoreCase("letras")) {
-            workers.submit(() -> generarLetras(from));
+            requestDocuments(from, false, true, null);
             return;
         }
 
@@ -178,10 +240,10 @@ public class SongPipeline {
             String resto = body.strip().substring(5).strip();
             if (resto.isEmpty()) {
                 whatsApp.replyText(from, "Buscando las notas en el historico...");
-                workers.submit(() -> generarNotas(from));
+                requestDocuments(from, true, false, null);
             } else if (playlistTone.naturalLanguageEnabled()
                     && !resto.matches("(?i).+\\s+(?:(?:version|versión)\\s+\\d+|todas)")) {
-                workers.submit(() -> playlistTone.handleNatural(from, body));
+                conversations.submit(() -> playlistTone.handleNatural(from, body));
             } else {
                 workers.submit(() -> copiarNotaElegida(from, resto));
             }
@@ -196,7 +258,7 @@ public class SongPipeline {
         }
 
         if (body != null && !body.isBlank() && playlistTone.naturalLanguageEnabled()) {
-            workers.submit(() -> playlistTone.handleNatural(from, body));
+            conversations.submit(() -> playlistTone.handleNatural(from, body));
         }
     }
 
@@ -289,12 +351,17 @@ public class SongPipeline {
     }
 
     void generarLetras(String from) {
+        generarLetras(from, null);
+    }
+
+    void generarLetras(String from, String selectedSong) {
         if (!lyricsInProgress.add(from)) {
             whatsApp.replyText(from, "El documento de letras sigue en proceso. Te avisare cuando termine.");
             return;
         }
         java.util.concurrent.ScheduledFuture<?> reminder = null;
         try {
+            workState.document("En preparacion: buscando letras en el historico");
             whatsApp.replyText(from, "Estoy preparando el documento de letras y buscando en el historico. Puede tardar varios minutos. Puedes seguir eligiendo las versiones de notas; te avisare cuando el documento este listo.");
             reminder = progress.scheduleAtFixedRate(() -> {
                 try {
@@ -306,12 +373,15 @@ public class SongPipeline {
             var estructura = driveService.ensureSundayStructure(domingo);
             String docName = "Letras - " + carpeta + ".docx";
 
-            List<String> mp3s = driveService.listMp3Names(estructura.playlistId());
+            List<String> mp3s = driveService.listMp3Names(estructura.playlistId()).stream()
+                    .filter(name -> selectedSong == null || name.equals(selectedSong)).toList();
             if (mp3s.isEmpty()) {
+                workState.document("Sin canciones para preparar el documento");
                 whatsApp.replyText(from, "Aun no hay canciones en la playlist de " + carpeta + ".");
                 return;
             }
             List<TitleCleaner.Titulo> titulos = mp3s.stream().map(TitleCleaner::clean).toList();
+            mp3s.forEach(song -> workState.lyric(song, "En preparacion"));
 
             // Buscar letras en docs historicos del Drive (una pasada por doc)
             var letras = lyricsHistory.buscar(titulos.stream().map(TitleCleaner.Titulo::nombre).toList());
@@ -322,6 +392,10 @@ public class SongPipeline {
                 // Crear el esqueleto por primera vez
                 byte[] docx = lyricsDocx.build(titulos, letras);
                 var subido = driveService.uploadBytes(docName, docx, DriveService.DOCX_MIME, estructura.domingoId());
+                workState.document("Listo: " + subido.getWebViewLink());
+                titulos.forEach(t -> workState.lyric(t.nombre(),
+                        letras.containsKey(t.nombre()) && !letras.get(t.nombre()).parrafos().isEmpty()
+                                ? "Incluida desde el historico; revisar version" : "Titulo incluido, sin letra encontrada en el historico"));
                 var sb = new StringBuilder("Doc de letras creado con:\n");
                 titulos.forEach(t -> {
                     sb.append("\u2022 ").append(t.display());
@@ -343,11 +417,15 @@ public class SongPipeline {
             byte[] actual = driveService.downloadBytes(existente.getId());
             var sync = lyricsDocx.appendMissing(actual, titulos, letras);
             if (sync.agregados().isEmpty()) {
+                workState.document("Al dia: " + existente.getWebViewLink());
+                mp3s.forEach(song -> workState.lyric(song, "Titulo presente en el documento; contenido conservado sin verificar"));
                 whatsApp.replyText(from,
                         "El doc ya esta al dia. Editalo aqui:\n" + existente.getWebViewLink());
                 return;
             }
             driveService.updateBytes(existente.getId(), sync.bytes(), DriveService.DOCX_MIME);
+            workState.document("Actualizado: " + existente.getWebViewLink());
+            mp3s.forEach(song -> workState.lyric(song, "Titulo presente en el documento; revisar contenido"));
             var sb = new StringBuilder("Titulos agregados al doc:\n");
             sync.agregados().forEach(t -> sb.append("\u2022 ").append(t).append('\n'));
             sb.append("\nEditalo aqui: ").append(existente.getWebViewLink());
@@ -355,6 +433,7 @@ public class SongPipeline {
 
         } catch (Exception e) {
             LOG.error("Error generando doc de letras", e);
+            workState.document("Fallo la preparacion del documento; no se confirmo el resultado");
             whatsApp.replyText(from, "No pude crear el doc de letras: " + e.getMessage());
         } finally {
             if (reminder != null) reminder.cancel(false);
@@ -367,6 +446,7 @@ public class SongPipeline {
     }
 
     void generarNotas(String from, String selectedSong) {
+        List<String> requestedSongs = new ArrayList<>();
         try {
             versionesPendientes.remove(from);
             var domingo = Fechas.proximoDomingo();
@@ -381,6 +461,8 @@ public class SongPipeline {
             }
 
             List<String> copiadas = new ArrayList<>();
+            requestedSongs.addAll(mp3s);
+            mp3s.forEach(song -> workState.note(song, "Buscando notas en el historico"));
             List<String> sinNotas = new ArrayList<>();
             List<NoteChoice> elecciones = new ArrayList<>();
             var refs = lyricsHistory.refs(mp3s.stream()
@@ -392,12 +474,15 @@ public class SongPipeline {
                 var variantes = ref == null ? List.<mx.salvador.wabot.media.LyricsHistoryService.Acordeorio>of()
                         : ref.acordeorios;
                 if (variantes.isEmpty()) {
+                    workState.note(nombre, "No se encontraron notas en el historico");
                     sinNotas.add(nombre);
                 } else if (variantes.size() == 1) {
                     var a = variantes.get(0);
                     driveService.copyTo(a.id, a.name, estructura.notasId());
+                    workState.note(nombre, "Copiadas: " + a.name);
                     copiadas.add(nombre + " \u2192 " + a.name);
                 } else {
+                    workState.note(nombre, "Pendiente de elegir entre " + variantes.size() + " versiones");
                     // Varias versiones: se preguntan una por una para que la
                     // respuesta pueda ser solo "version 1" o "version 2".
                     elecciones.add(new NoteChoice(nombre, variantes.stream()
@@ -430,6 +515,7 @@ public class SongPipeline {
             whatsApp.replyText(from, sb.toString());
 
         } catch (Exception e) {
+            requestedSongs.forEach(song -> workState.noteFailed(song));
             LOG.error("Error copiando notas", e);
             whatsApp.replyText(from, "No pude copiar las notas: " + e.getMessage());
         }
@@ -463,6 +549,7 @@ public class SongPipeline {
             PendingNotes pending = versionesPendientes.get(from);
             var elegida = current.versions().get(selection - 1);
             driveService.copyTo(elegida.id(), elegida.name(), pending.folderId());
+            workState.note(current.song(), "Copiadas: " + elegida.name());
 
             List<NoteChoice> restantes = pending.choices().subList(1, pending.choices().size());
             var sb = new StringBuilder("Copiado a *Notas/*:\n\u2022 ").append(elegida.name());
@@ -548,10 +635,12 @@ public class SongPipeline {
                 for (var a : variantes) {
                     driveService.copyTo(a.id, a.name, estructura.notasId());
                     sb.append("\u2022 ").append(a.name).append('\n');
+                    workState.note(cancion, "Versiones copiadas por peticion explicita");
                 }
             } else {
                 var a = variantes.get(seleccion - 1);
                 driveService.copyTo(a.id, a.name, estructura.notasId());
+                workState.note(cancion, "Copiadas: " + a.name);
                 sb.append("\u2022 ").append(a.name).append('\n');
             }
             whatsApp.replyText(from, sb.toString().strip());
