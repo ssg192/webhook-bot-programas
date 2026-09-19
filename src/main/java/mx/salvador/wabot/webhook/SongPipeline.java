@@ -191,22 +191,8 @@ public class SongPipeline {
                 sb.append("Subidas a *").append(carpeta).append("/Playlist*:\n");
                 ok.forEach(t -> sb.append("\u2022 ").append(t).append('\n'));
                 sb.append('\n').append(estructura.link());
-                // Sugerir notas si el historico tiene acordeorios de lo subido
-                try {
-                    List<String> nombres = ok.stream()
-                            .map(t -> TitleCleaner.clean(t + ".mp3").nombre())
-                            .toList();
-                    long disponibles = lyricsHistory.refs(nombres).values().stream()
-                            .filter(r -> !r.acordeorios.isEmpty()).count();
-                    if (disponibles > 0) {
-                        sb.append("\n\nHay notas de ").append(disponibles)
-                                .append(" cancion(es) en el historico. Manda \"notas\" y las copio a *Notas/*.");
-                    }
-                } catch (Exception e) {
-                    LOG.warn("No se pudo evaluar sugerencia de notas", e);
-                }
                 if (semitones == 0) {
-                    sb.append("\n\nPara cambiar el tono, escribe \"bajar tono\" o \"subir tono\". Te preguntare cuales canciones y cuantos semitonos.");
+                    sb.append("\n\nEscribe \"cambiar tonalidad\" y te preguntare que cancion quieres ajustar y cuantos semitonos subir o bajar.");
                 }
             }
             if (!failed.isEmpty()) {

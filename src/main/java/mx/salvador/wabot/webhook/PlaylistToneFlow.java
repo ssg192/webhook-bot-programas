@@ -14,27 +14,27 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.Comparator;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
-/** Conversacion: direccion -> canciones -> semitonos. Se ejecuta en los workers. */
+/** Conversacion: cambiar tonalidad -> una cancion -> subir/bajar semitonos. */
 @ApplicationScoped
 public class PlaylistToneFlow {
     private static final Logger LOG = Logger.getLogger(PlaylistToneFlow.class);
     private static final Pattern SONGS = Pattern.compile("^canci[oó]n(?:es)?(?:\\s+.*)?$");
     private static final Pattern AMOUNT = Pattern.compile("^([+-]?\\d+)(?:\\s+semitonos?)?$");
+    private static final Pattern ADJUSTMENT = Pattern.compile("^(subir|bajar)\\s+([+-]?\\d+)(?:\\s+semitonos?)?$");
     private static final Pattern PREVIOUS_SHIFT = Pattern.compile("^(.*) \\(([+-]\\d+)\\)$");
 
     @Inject DriveService drive;
     @Inject PitchShifter shifter;
     @Inject WhatsAppService whatsApp;
 
-    private record Pending(int direction, DriveService.EstructuraDomingo folder,
-                           LocalDate sunday, List<AudioFile> songs, List<AudioFile> selected,
+    private record Pending(DriveService.EstructuraDomingo folder,
+                           LocalDate sunday, List<AudioFile> songs, AudioFile selected,
                            Instant expires) {}
 
     private final Map<String, Pending> pending = new ConcurrentHashMap<>();
@@ -42,17 +42,18 @@ public class PlaylistToneFlow {
     public boolean accepts(String body) {
         if (body == null) return false;
         String text = normalize(body);
-        return text.equals("bajar tono") || text.equals("subir tono")
+        return text.equals("cambiar tonalidad") || text.equals("bajar tono") || text.equals("subir tono")
                 || text.equals("todas") || text.equals("cancelar")
-                || SONGS.matcher(text).matches() || AMOUNT.matcher(text).matches();
+                || SONGS.matcher(text).matches() || AMOUNT.matcher(text).matches()
+                || ADJUSTMENT.matcher(text).matches() || text.equals("subir") || text.equals("bajar");
     }
 
     public void handle(String from, String body) {
         String text = normalize(body);
         pending.entrySet().removeIf(e -> e.getValue().expires().isBefore(Instant.now()));
         try {
-            if (text.equals("bajar tono") || text.equals("subir tono")) {
-                start(from, text.equals("bajar tono") ? -1 : 1);
+            if (text.equals("cambiar tonalidad") || text.equals("bajar tono") || text.equals("subir tono")) {
+                start(from);
                 return;
             }
             if (text.equals("cancelar")) {
@@ -63,50 +64,49 @@ public class PlaylistToneFlow {
             Pending choice = pending.get(from);
             if (choice == null || !choice.sunday().equals(Fechas.proximoDomingo())) {
                 if (choice != null) pending.remove(from, choice);
-                whatsApp.replyText(from, "Escribe \"bajar tono\" o \"subir tono\" para comenzar.");
+                whatsApp.replyText(from, "Escribe \"cambiar tonalidad\" para comenzar.");
                 return;
             }
-            if (choice.selected().isEmpty()) {
-                List<AudioFile> selected = select(text, choice.songs());
-                Pending next = new Pending(choice.direction(), choice.folder(), choice.sunday(),
+            if (choice.selected() == null) {
+                AudioFile selected = select(text, choice.songs());
+                Pending next = new Pending(choice.folder(), choice.sunday(),
                         choice.songs(), selected, choice.expires());
                 if (pending.replace(from, choice, next)) askAmount(from, next);
                 return;
             }
-            var match = AMOUNT.matcher(text);
+            var match = ADJUSTMENT.matcher(text);
             if (!match.matches()) {
                 askAmount(from, choice);
                 return;
             }
             int amount;
             try {
-                amount = Integer.parseInt(match.group(1));
+                amount = Integer.parseInt(match.group(2));
             } catch (NumberFormatException e) {
                 amount = 0;
             }
             if (amount < 1 || amount > 12) {
-                whatsApp.replyText(from, "Escribe un numero del 1 al 12, por ejemplo 2. La direccion ya esta elegida.");
+                whatsApp.replyText(from, "Escribe subir o bajar y un numero del 1 al 12. Por ejemplo: subir 1 o bajar 2.");
                 return;
             }
             // Consume la seleccion una sola vez, aun si llegan respuestas simultaneas.
             if (!pending.remove(from, choice)) return;
-            whatsApp.replyText(from, "Ajustando " + choice.selected().size() + " cancion(es), te aviso...");
-            int semitones = amount * choice.direction();
-            var result = new StringBuilder();
-            for (AudioFile song : choice.selected()) {
-                result.append("• ").append(replaceAudio(song, choice.folder().playlistId(), semitones)).append('\n');
-            }
-            result.append('\n').append(choice.folder().link());
+            whatsApp.replyText(from, "Ajustando " + choice.selected().name() + ", te aviso...");
+            int semitones = amount * (match.group(1).equals("bajar") ? -1 : 1);
+            var result = new StringBuilder("• ")
+                    .append(replaceAudio(choice.selected(), choice.folder().playlistId(), semitones));
+            result.append("\n\n").append(choice.folder().link());
+            result.append("\n\nPara ajustar otra cancion, escribe cambiar tonalidad.");
             whatsApp.replyText(from, result.toString());
         } catch (IllegalArgumentException e) {
-            whatsApp.replyText(from, "Elige numeros de la lista: cancion 1, cancion 1 3 o todas.");
+            whatsApp.replyText(from, "Elige una sola cancion de la lista, por ejemplo: cancion 1. Cada cancion lleva su propio ajuste.");
         } catch (Exception e) {
             LOG.error("Error en seleccion de tono", e);
-            whatsApp.replyText(from, "No pude preparar el cambio de tono. Vuelve a escribir bajar tono o subir tono.");
+            whatsApp.replyText(from, "No pude preparar el cambio de tono. Vuelve a escribir cambiar tonalidad.");
         }
     }
 
-    private void start(String from, int direction) throws Exception {
+    private void start(String from) throws Exception {
         pending.remove(from);
         LocalDate sunday = Fechas.proximoDomingo();
         var folder = drive.ensureSundayStructure(sunday);
@@ -115,44 +115,37 @@ public class PlaylistToneFlow {
             whatsApp.replyText(from, "Aun no hay canciones en la playlist. Envia primero sus links de YouTube.");
             return;
         }
-        Pending choice = new Pending(direction, folder, sunday, songs,
-                songs.size() == 1 ? songs : List.of(), Instant.now().plusSeconds(1800));
+        Pending choice = new Pending(folder, sunday, songs,
+                songs.size() == 1 ? songs.get(0) : null, Instant.now().plusSeconds(1800));
         pending.put(from, choice);
         if (songs.size() == 1) {
             askAmount(from, choice);
             return;
         }
-        var menu = new StringBuilder("¿A cuales canciones quieres ")
-                .append(direction < 0 ? "bajar" : "subir").append(" el tono?\n");
+        var menu = new StringBuilder("¿A que cancion quieres cambiar la tonalidad?\n");
         for (int i = 0; i < songs.size(); i++) {
             menu.append(i + 1).append(". ").append(songs.get(i).name()).append('\n');
         }
-        menu.append("\nResponde cancion 1, cancion 1 3 o todas. Para salir, escribe cancelar.");
+        menu.append("\nResponde cancion 1, cancion 2, etc. Para salir, escribe cancelar.");
         whatsApp.replyText(from, menu.toString());
     }
 
     private void askAmount(String from, Pending choice) {
-        var message = new StringBuilder("Seleccionadas:\n");
-        choice.selected().forEach(song -> message.append("• ").append(song.name()).append('\n'));
-        message.append("\n¿Cuantos semitonos quieres ")
-                .append(choice.direction() < 0 ? "bajar" : "subir")
-                .append("? Escribe un numero del 1 al 12, por ejemplo 2.\n")
-                .append("Se aplica sobre el tono actual de los audios. Para salir, escribe cancelar.");
+        var message = new StringBuilder("Cancion seleccionada:\n• ")
+                .append(choice.selected().name()).append('\n');
+        message.append("\n¿Que quieres hacer con esta cancion?\n")
+                .append("Escribe subir 1 para subir un semitono o bajar 2 para bajar dos semitonos (de 1 a 12).\n")
+                .append("Se aplica sobre el tono actual de esta cancion. Para salir, escribe cancelar.");
         whatsApp.replyText(from, message.toString());
     }
 
-    static List<AudioFile> select(String text, List<AudioFile> songs) {
-        if (text.equals("todas")) return songs;
+    static AudioFile select(String text, List<AudioFile> songs) {
         if (!SONGS.matcher(text).matches()) throw new IllegalArgumentException();
         String[] parts = text.split("\\s+");
-        if (parts.length < 2) throw new IllegalArgumentException();
-        var indices = new LinkedHashSet<Integer>();
-        for (int i = 1; i < parts.length; i++) {
-            int index = Integer.parseInt(parts[i]);
-            if (index < 1 || index > songs.size()) throw new IllegalArgumentException();
-            indices.add(index - 1);
-        }
-        return indices.stream().map(songs::get).toList();
+        if (parts.length != 2) throw new IllegalArgumentException();
+        int index = Integer.parseInt(parts[1]);
+        if (index < 1 || index > songs.size()) throw new IllegalArgumentException();
+        return songs.get(index - 1);
     }
 
     /** Serializa reemplazos locales; otro menu que apunte al archivo viejo se rechaza. */

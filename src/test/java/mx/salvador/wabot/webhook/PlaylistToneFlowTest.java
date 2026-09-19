@@ -37,75 +37,83 @@ class PlaylistToneFlowTest {
     }
 
     @Test
-    void lowersSelectedSongsAndUploadsBeforeTrashingExactIds() {
-        flow.handle("a", "BAJAR   TONO");
+    void lowersOnlySelectedSongAndUploadsBeforeTrashingExactId() {
+        flow.handle("a", "CAMBIAR   TONALIDAD");
         assertTrue(messages.last().contains("1. Uno.mp3"));
-        flow.handle("a", "canción 1 3 1");
-        assertTrue(messages.last().contains("¿Cuantos semitonos quieres bajar?"));
+        flow.handle("a", "canción 1");
+        assertTrue(messages.last().contains("¿Que quieres hacer con esta cancion?"));
         assertTrue(drive.events.isEmpty());
-        flow.handle("a", "2 semitonos");
-        assertEquals(List.of(-2, -2), pitch.shifts);
-        assertEquals(List.of("download:1", "upload:Uno (-2).mp3", "trash:1",
-                "download:3", "upload:Tres (-2).m4a", "trash:3"), drive.events);
-        assertFalse(drive.trashed.contains("2"));
+        flow.handle("a", "bajar 2 semitonos");
+        assertEquals(List.of(-2), pitch.shifts);
+        assertEquals(List.of("download:1", "upload:Uno (-2).mp3", "trash:1"), drive.events);
+        assertEquals(Set.of("1"), drive.trashed);
         assertTrue(pitch.inputs.stream().noneMatch(Files::exists));
-        flow.handle("a", "2");
-        assertEquals(2, pitch.shifts.size());
+        flow.handle("a", "bajar 2");
+        assertEquals(1, pitch.shifts.size());
     }
 
     @Test
-    void raisesAllWithSeparateSessionsForEachSender() {
-        flow.handle("a", "subir tono");
-        flow.handle("b", "bajar tono");
-        flow.handle("a", "todas");
+    void keepsSeparateSelectionsAndDirectionsForEachSender() {
+        flow.handle("a", "cambiar tonalidad");
+        flow.handle("b", "cambiar tonalidad");
+        flow.handle("a", "cancion 1");
         flow.handle("b", "2"); // A number cannot select a song accidentally.
         assertTrue(drive.events.isEmpty());
-        flow.handle("a", "1");
-        assertEquals(List.of(1, 1, 1), pitch.shifts);
+        flow.handle("a", "subir 1");
+        flow.handle("b", "cancion 2");
+        flow.handle("b", "bajar 2");
+        assertEquals(List.of(1, -2), pitch.shifts);
+        assertEquals(Set.of("1", "2"), drive.trashed);
     }
 
     @Test
     void oneSongSkipsSelectionAndInvalidAmountsCanBeRetried() {
         drive.songs = List.of(drive.songs.get(0));
-        flow.handle("a", "subir tono");
+        flow.handle("a", "cambiar tonalidad");
         assertTrue(messages.last().contains("semitonos"));
-        for (String value : List.of("0", "-2", "13", "999999999999999999999999999")) {
+        for (String value : List.of("2", "subir 0", "bajar -2", "subir 13", "subir 999999999999999999999999999")) {
             flow.handle("a", value);
             assertTrue(drive.events.isEmpty());
         }
-        flow.handle("a", "12");
+        flow.handle("a", "subir 12");
         assertEquals(List.of(12), pitch.shifts);
     }
 
     @Test
     void rejectsWholeInvalidSelectionAndAllowsRetry() {
-        flow.handle("a", "bajar tono");
-        for (String value : List.of("cancion 1 4", "cancion 0", "cancion", "cancion 999999999999999")) {
+        flow.handle("a", "cambiar tonalidad");
+        for (String value : List.of("todas", "cancion 1 3", "cancion 1 4", "cancion 0", "cancion", "cancion 999999999999999")) {
             flow.handle("a", value);
-            assertTrue(messages.last().contains("Elige numeros"));
+            assertTrue(messages.last().contains("Elige una sola cancion"));
+            assertTrue(drive.events.isEmpty());
         }
         flow.handle("a", "cancion 2");
-        flow.handle("a", "1");
+        flow.handle("a", "bajar 1");
         assertEquals(Set.of("2"), drive.trashed);
     }
 
     @Test
-    void failedUploadPreservesOriginalAndContinuesOtherSongs() {
+    void failedUploadPreservesOriginalAndAllowsAnotherSongWithDifferentAdjustment() {
         drive.failUpload = "Uno (-2).mp3";
-        flow.handle("a", "bajar tono");
-        flow.handle("a", "todas");
-        flow.handle("a", "2");
-        assertEquals(Set.of("2", "3"), drive.trashed);
+        flow.handle("a", "cambiar tonalidad");
+        flow.handle("a", "cancion 1");
+        flow.handle("a", "bajar 2");
+        assertTrue(drive.trashed.isEmpty());
         assertTrue(messages.last().contains("Uno.mp3: no pude ajustar"));
-        assertTrue(messages.last().contains("Tres (-2).m4a: lista"));
+        flow.handle("a", "cambiar tonalidad");
+        flow.handle("a", "cancion 3");
+        flow.handle("a", "subir 1");
+        assertEquals(Set.of("3"), drive.trashed);
+        assertEquals(List.of(-2, 1), pitch.shifts);
+        assertTrue(messages.last().contains("Tres (+1).m4a: lista"));
     }
 
     @Test
     void processingFailurePreservesOriginal() {
         pitch.fail = true;
-        flow.handle("a", "subir tono");
+        flow.handle("a", "cambiar tonalidad");
         flow.handle("a", "cancion 1");
-        flow.handle("a", "2");
+        flow.handle("a", "subir 2");
         assertEquals(List.of("download:1"), drive.events);
         assertTrue(drive.trashed.isEmpty());
         assertTrue(pitch.inputs.stream().noneMatch(Files::exists));
@@ -114,39 +122,41 @@ class PlaylistToneFlowTest {
     @Test
     void failedTrashReportsBothFilesInsteadOfClaimingReplacement() {
         drive.failTrash = true;
-        flow.handle("a", "subir tono");
+        flow.handle("a", "cambiar tonalidad");
         flow.handle("a", "cancion 1");
-        flow.handle("a", "2");
+        flow.handle("a", "subir 2");
         assertTrue(messages.last().contains("subida, pero no pude"));
         assertTrue(drive.trashed.isEmpty());
     }
 
     @Test
     void menuKeepsOriginalIdsAndRejectsChangedAudio() {
-        flow.handle("a", "subir tono");
+        flow.handle("a", "cambiar tonalidad");
         drive.songs = List.of(drive.songs.get(2), drive.songs.get(1), drive.songs.get(0));
         drive.changed.add("1");
         flow.handle("a", "cancion 1");
-        flow.handle("a", "2");
+        flow.handle("a", "subir 2");
         assertTrue(drive.events.isEmpty());
         assertTrue(messages.last().contains("Uno.mp3: cambio"));
     }
 
     @Test
     void cancelledAndEmptySelectionsDoNotModifyFiles() {
-        flow.handle("a", "subir tono");
+        flow.handle("a", "cambiar tonalidad");
         flow.handle("a", "cancelar");
         flow.handle("a", "cancion 1");
-        flow.handle("a", "2");
+        flow.handle("a", "subir 2");
         assertTrue(drive.events.isEmpty());
         drive.songs = List.of();
-        flow.handle("a", "bajar tono");
+        flow.handle("a", "cambiar tonalidad");
         assertTrue(messages.last().contains("Aun no hay canciones"));
     }
 
     @Test
     void routesOnlyStandaloneToneConversationCommands() {
-        assertTrue(flow.accepts(" SUBIR TONO "));
+        assertTrue(flow.accepts(" CAMBIAR TONALIDAD "));
+        assertTrue(flow.accepts("subir 1"));
+        assertTrue(flow.accepts("bajar 2 semitonos"));
         assertTrue(flow.accepts("canción 1 3"));
         assertTrue(flow.accepts("2 semitonos"));
         assertFalse(flow.accepts("https://youtube.com/watch?v=abc tono -2"));

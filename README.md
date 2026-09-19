@@ -76,10 +76,12 @@ Para copiar los acordeorios del histórico a la carpeta `Notas`, manda `notas`. 
 más de una versión de una canción, el bot preguntará cuál quieres. Responde sólo
 con `version 1`, `version 2`, etc.; no hace falta repetir el nombre de la canción.
 
-Para ajustar los audios de la playlist, escribe `bajar tono` o `subir tono`.
-El bot muestra las canciones numeradas: responde `cancion 1`, `cancion 1 3` o
-`todas`. Después te pregunta cuántos semitonos: responde `2`, por ejemplo
-(de 1 a 12). Si sólo hay una canción, pregunta directamente los semitonos.
+Para ajustar un audio de la playlist, escribe `cambiar tonalidad`.
+El bot muestra las canciones numeradas: elige una, por ejemplo `cancion 1`.
+Después pregunta qué quieres hacer: responde `subir 1` o `bajar 2`, por ejemplo
+(de 1 a 12 semitonos). Si sólo hay una canción, pregunta directamente el ajuste.
+Cada canción se ajusta por separado; escribe `cambiar tonalidad` de nuevo para
+elegir otra y darle un ajuste diferente.
 El ajuste se aplica al audio actual; primero sube la versión ajustada y después
 manda el archivo anterior a la papelera de Drive. Si falla el procesamiento o
 la subida, conserva el anterior. Puedes escribir `cancelar` antes de iniciar el
