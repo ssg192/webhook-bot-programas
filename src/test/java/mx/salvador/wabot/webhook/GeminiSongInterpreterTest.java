@@ -12,6 +12,25 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class GeminiSongInterpreterTest {
     @Test
+    void noteVersionUsesPendingMenuBoundsNotPlaylistBounds() throws Exception {
+        var ai = new Stub();
+        String response = "{\"intent\":\"note_version\",\"song\":3,\"semitones\":0}";
+        assertEquals(3, ai.parse(response, 1, 3).song());
+        assertThrows(IOException.class, () -> ai.parse(response, 10, 2));
+        assertThrows(IOException.class, () -> ai.parse(response, 10));
+    }
+
+    @Test
+    void suppliesPendingNoteNamesWithoutDriveIds() throws Exception {
+        var ai = new Stub();
+        var choice = new SongPipeline.NoteChoice("Al que es digno", List.of(
+                new SongPipeline.NoteVersion("private-drive-id", "Version en Re.pdf")));
+        ai.interpret("esa version", List.of("audio"), 0, List.of(), "note_version", choice);
+        assertTrue(ai.request.contains("Version en Re.pdf"));
+        assertTrue(ai.request.contains("versionesNotas"));
+        assertFalse(ai.request.contains("private-drive-id"));
+    }
+    @Test
     void requiresExplicitEnableAndApiKey() {
         var ai = new Stub();
         ai.enabled = false;

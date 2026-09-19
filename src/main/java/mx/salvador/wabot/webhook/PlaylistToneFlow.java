@@ -108,6 +108,7 @@ public class PlaylistToneFlow {
             if (text.equals("cancelar")) {
                 pending.remove(from);
                 histories.remove(from);
+                pipeline.cancelNoteChoice(from);
                 whatsApp.replyText(from, "Solicitud pendiente cancelada. Si una operacion ya comenzo, terminara de procesarse.");
                 return;
             }
@@ -205,11 +206,25 @@ public class PlaylistToneFlow {
                 if (pending.putIfAbsent(from, previous) != null) return;
             }
             int selected = previous.selected() == null ? recentSelection(from, songs) : songs.indexOf(previous.selected()) + 1;
-            var result = interpreter.interpret(body, songs.stream().map(AudioFile::name).toList(), selected,
-                    history(from), uploadedIds == null ? previous.action() : "after_upload");
+            var noteChoice = uploadedIds == null ? pipeline.pendingNoteChoice(from) : null;
+            var names = songs.stream().map(AudioFile::name).toList();
+            var result = noteChoice == null
+                    ? interpreter.interpret(body, names, selected, history(from), uploadedIds == null ? previous.action() : "after_upload")
+                    : interpreter.interpret(body, names, selected, history(from), "note_version", noteChoice);
             // Una respuesta tardia de la IA no debe sobreescribir un menu nuevo o cancelado.
             if (pending.get(from) != previous) return;
+            if (noteChoice != null && pipeline.pendingNoteChoice(from) != noteChoice) return;
             rememberMessage(from, body);
+            if (result.intent().equals("note_version")) {
+                if (!pending.remove(from, previous)) return;
+                pipeline.chooseNoteVersion(from, noteChoice, result.song());
+                return;
+            }
+            if (noteChoice != null && result.intent().equals("clarify")) {
+                pending.remove(from, previous);
+                pipeline.repeatNoteQuestion(from);
+                return;
+            }
             if (result.intent().equals("cancel")) {
                 handle(from, "cancelar");
                 return;
