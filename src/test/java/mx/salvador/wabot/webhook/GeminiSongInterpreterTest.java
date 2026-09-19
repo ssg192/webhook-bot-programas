@@ -72,6 +72,25 @@ class GeminiSongInterpreterTest {
         assertNull(ai.request);
     }
 
+    @Test
+    void providerErrorsHaveSafeDistinctDiagnostics() {
+        var quota = GeminiSongInterpreter.httpFailure(429);
+        assertEquals("GEMINI_HTTP_429", quota.code());
+        assertTrue(quota.userMessage().contains("cuota"));
+        assertTrue(GeminiSongInterpreter.httpFailure(403).userMessage().contains("permisos"));
+        assertTrue(GeminiSongInterpreter.httpFailure(400).userMessage().contains("configuracion"));
+        assertTrue(GeminiSongInterpreter.httpFailure(404).userMessage().contains("modelo"));
+    }
+
+    @Test
+    void truncationHasDifferentDiagnosticFromQuota() {
+        var ai = new Stub();
+        ai.finish = "MAX_TOKENS";
+        var error = assertThrows(GeminiSongInterpreter.Failure.class,
+                () -> ai.interpret("subela", List.of("Uno"), 1));
+        assertEquals("GEMINI_MAX_TOKENS", error.code());
+    }
+
     private static class Stub extends GeminiSongInterpreter {
         String request;
         String finish = "STOP";

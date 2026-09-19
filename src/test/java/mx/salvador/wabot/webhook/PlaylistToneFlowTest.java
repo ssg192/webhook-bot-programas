@@ -228,6 +228,20 @@ class PlaylistToneFlowTest {
     }
 
     @Test
+    void quotaErrorExplainsFailureWithoutBlamingUserWording() {
+        flow.interpreter = new FakeInterpreter("tone", 1, 2) {
+            @Override public Interpretation interpret(String message, List<String> songs, int selected) throws Exception {
+                throw GeminiSongInterpreter.httpFailure(429);
+            }
+        };
+        flow.handleNatural("a", "sube esa a dos semitonos");
+        assertTrue(messages.last().contains("cuota"));
+        assertTrue(messages.last().contains("HTTP 429"));
+        assertFalse(messages.last().contains("Usa cambiar tonalidad"));
+        assertTrue(drive.events.isEmpty());
+    }
+
+    @Test
     void cancellationDuringInterpretationDoesNotApplyOldResult() {
         var ai = new FakeInterpreter("tone", 1, -2);
         ai.duringInterpret = () -> flow.handle("a", "cancelar");

@@ -32,6 +32,32 @@ public class GeminiSongInterpreter {
 
     public record Interpretation(String intent, int song, int semitones) {}
 
+    /** Diagnostico controlado, sin incluir claves, prompts ni respuestas del proveedor. */
+    public static class Failure extends IOException {
+        private final String code;
+        private final String userMessage;
+
+        Failure(String code, String userMessage) {
+            super(code);
+            this.code = code;
+            this.userMessage = userMessage;
+        }
+
+        public String code() { return code; }
+        public String userMessage() { return userMessage; }
+    }
+
+    static Failure httpFailure(int status) {
+        String message = switch (status) {
+            case 429 -> "Gemini rechazo la solicitud por limite de cuota o frecuencia. Hay que revisar la cuota del proyecto en Google AI Studio.";
+            case 401, 403 -> "Gemini rechazo el acceso. Hay que revisar la API key y los permisos del proyecto.";
+            case 400 -> "Gemini rechazo la solicitud. Hay que revisar la configuracion de la clave y el formato enviado.";
+            case 404 -> "Gemini no encontro el recurso solicitado. Hay que revisar el modelo configurado.";
+            default -> "No pude comunicarme correctamente con Gemini. Intentalo de nuevo en unos momentos.";
+        };
+        return new Failure("GEMINI_HTTP_" + status, message + " (HTTP " + status + ")");
+    }
+
     public boolean available() {
         return enabled && apiKey.filter(key -> !key.isBlank()).isPresent();
     }
@@ -69,15 +95,32 @@ public class GeminiSongInterpreter {
                 "generationConfig", Map.of("responseMimeType", "application/json", "responseSchema", schema,
                         "temperature", 0, "maxOutputTokens", 256));
         String response = exchange(json.writeValueAsString(payload));
-        JsonNode candidate = json.readTree(response).path("candidates").path(0);
+        JsonNode candidate;
+        try {
+            JsonNode root = json.readTree(response);
+            if (root == null) throw new IOException();
+            candidate = root.path("candidates").path(0);
+        } catch (IOException e) {
+            throw new Failure("GEMINI_INVALID_ENVELOPE", "Gemini devolvio una respuesta que no pude leer. No se aplico ningun ajuste.");
+        }
         if (!candidate.path("finishReason").asText().equals("STOP")) {
-            throw new IOException("Respuesta incompleta de Gemini");
+            String reason = candidate.path("finishReason").asText();
+            String code = switch (reason) {
+                case "MAX_TOKENS" -> "GEMINI_MAX_TOKENS";
+                case "SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT" -> "GEMINI_BLOCKED_RESPONSE";
+                default -> "GEMINI_INCOMPLETE_RESPONSE";
+            };
+            throw new Failure(code, "Gemini no devolvio una respuesta completa. No se aplico ningun ajuste; puedes intentarlo de nuevo.");
         }
         StringBuilder content = new StringBuilder();
         for (JsonNode part : candidate.path("content").path("parts")) {
             if (!part.path("thought").asBoolean()) content.append(part.path("text").asText());
         }
-        return parse(content.toString(), songs.size());
+        try {
+            return parse(content.toString(), songs.size());
+        } catch (IOException e) {
+            throw new Failure("GEMINI_INVALID_INTERPRETATION", "La respuesta de Gemini no paso la validacion. No se aplico ningun ajuste.");
+        }
     }
 
     Interpretation parse(String response, int songCount) throws IOException {
@@ -108,7 +151,7 @@ public class GeminiSongInterpreter {
                 .POST(HttpRequest.BodyPublishers.ofString(body)).build();
         HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
         // Sin reintentos ni proveedores alternos de pago al agotar la cuota.
-        if (response.statusCode() != 200) throw new IOException("Gemini HTTP " + response.statusCode());
+        if (response.statusCode() != 200) throw httpFailure(response.statusCode());
         return response.body();
     }
 }

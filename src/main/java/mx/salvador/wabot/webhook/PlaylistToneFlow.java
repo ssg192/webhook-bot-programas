@@ -164,8 +164,14 @@ public class PlaylistToneFlow {
         } catch (Exception e) {
             if (e instanceof InterruptedException) Thread.currentThread().interrupt();
             // No registrar texto, respuesta del proveedor, credenciales ni datos del usuario.
-            LOG.warnf("No se pudo interpretar con Gemini (%s)", e.getClass().getSimpleName());
-            whatsApp.replyText(from, "No pude interpretar el mensaje ahora. Usa cambiar tonalidad, cancion 1 y luego subir 1 o bajar 2.");
+            String code = e instanceof GeminiSongInterpreter.Failure failure
+                    ? failure.code() : e.getClass().getSimpleName();
+            LOG.warnf("No se pudo interpretar con Gemini (%s)", code);
+            String message = e instanceof GeminiSongInterpreter.Failure failure ? failure.userMessage()
+                    : e instanceof java.net.http.HttpTimeoutException
+                    ? "Gemini tardo demasiado en responder. Intentalo de nuevo en unos momentos."
+                    : "No pude interpretar el mensaje por un fallo del servicio. Intentalo de nuevo en unos momentos.";
+            whatsApp.replyText(from, message);
         }
     }
 
