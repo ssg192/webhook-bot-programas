@@ -172,6 +172,14 @@ public class PlaylistToneFlow {
 
     /** Usa la misma seleccion y las mismas validaciones de archivos del flujo guiado. */
     public void handleNatural(String from, String body) {
+        handleNatural(from, body, null);
+    }
+
+    public void handleAfterUpload(String from, String instructions, List<String> uploadedIds) {
+        handleNatural(from, instructions, uploadedIds);
+    }
+
+    private void handleNatural(String from, String body, List<String> uploadedIds) {
         if (!naturalLanguageEnabled()) return;
         try {
             Pending previous = pending.get(from);
@@ -183,6 +191,11 @@ public class PlaylistToneFlow {
             LocalDate sunday = previous == null ? Fechas.proximoDomingo() : previous.sunday();
             var folder = previous == null ? drive.ensureSundayStructure(sunday) : previous.folder();
             List<AudioFile> songs = previous == null ? drive.listAudioFiles(folder.playlistId()) : previous.songs();
+            if (uploadedIds != null) {
+                // "La segunda" en un mensaje con links sigue el orden de esos links.
+                Map<String, AudioFile> byId = songs.stream().collect(java.util.stream.Collectors.toMap(AudioFile::id, song -> song));
+                songs = uploadedIds.stream().map(byId::get).filter(java.util.Objects::nonNull).toList();
+            }
             if (songs.isEmpty()) {
                 whatsApp.replyText(from, "Aun no hay canciones. Envia el link de YouTube para agregar una.");
                 return;
@@ -193,7 +206,7 @@ public class PlaylistToneFlow {
             }
             int selected = previous.selected() == null ? recentSelection(from, songs) : songs.indexOf(previous.selected()) + 1;
             var result = interpreter.interpret(body, songs.stream().map(AudioFile::name).toList(), selected,
-                    history(from), previous.action());
+                    history(from), uploadedIds == null ? previous.action() : "after_upload");
             // Una respuesta tardia de la IA no debe sobreescribir un menu nuevo o cancelado.
             if (pending.get(from) != previous) return;
             rememberMessage(from, body);
@@ -225,6 +238,10 @@ public class PlaylistToneFlow {
                 return;
             }
             if (result.intent().equals("unrelated")) {
+                if (uploadedIds != null) {
+                    pending.remove(from, previous);
+                    return; // Solo pedia subir los links; esa parte ya termino.
+                }
                 whatsApp.replyText(from, "Puedo mostrar la playlist, buscar notas, armar letras, cambiar el tono o quitar una cancion. Dime que necesitas; para agregar canciones, envia sus links de YouTube.");
                 return;
             }

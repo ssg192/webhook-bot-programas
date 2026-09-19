@@ -73,6 +73,12 @@ public class SongPipeline {
         downloadPool = Executors.newFixedThreadPool(Math.max(1, downloadConcurrency));
     }
 
+    @jakarta.annotation.PreDestroy
+    void shutdown() {
+        workers.shutdown();
+        if (downloadPool != null) downloadPool.shutdown();
+    }
+
     /** Dedupe de message IDs: Meta reintenta webhooks si no respondes rapido. */
     private final Set<String> seenMessageIds =
             Collections.newSetFromMap(new LinkedHashMap<String, Boolean>(512) {
@@ -102,6 +108,20 @@ public class SongPipeline {
         }
 
         String body = msg.text().body();
+
+        // Los links tienen prioridad aunque el mensaje empiece con "notas" u otro comando.
+        List<String> urls = downloader.extractYouTubeUrls(body).stream()
+                .map(YtDlpDownloader::cleanUrl).distinct().toList();
+        if (!urls.isEmpty()) {
+            final int semitones = pitchShifter.parseSemitones(body);
+            String aviso = semitones == 0
+                    ? "Descargando %d cancion(es), te aviso...".formatted(urls.size())
+                    : "Descargando %d cancion(es) y ajustando tono %s%d, te aviso..."
+                    .formatted(urls.size(), semitones > 0 ? "+" : "", semitones);
+            whatsApp.replyText(from, aviso);
+            workers.submit(() -> process(from, urls, semitones, body));
+            return;
+        }
 
         if (playlistTone.accepts(body)) {
             workers.submit(() -> playlistTone.handle(from, body));
@@ -147,33 +167,27 @@ public class SongPipeline {
             return;
         }
 
-        List<String> urls = downloader.extractYouTubeUrls(body).stream()
-                .map(YtDlpDownloader::cleanUrl)
-                .distinct()
-                .toList();
-        if (urls.isEmpty()) {
-            if (body != null && !body.isBlank() && playlistTone.naturalLanguageEnabled()) {
-                workers.submit(() -> playlistTone.handleNatural(from, body));
-            }
-            return;
+        if (body != null && !body.isBlank() && playlistTone.naturalLanguageEnabled()) {
+            workers.submit(() -> playlistTone.handleNatural(from, body));
         }
+    }
 
-        final int semitones = pitchShifter.parseSemitones(body);
-
-        String aviso = semitones == 0
-                ? "Descargando %d cancion(es), te aviso...".formatted(urls.size())
-                : "Descargando %d cancion(es) y ajustando tono %s%d, te aviso..."
-                .formatted(urls.size(), semitones > 0 ? "+" : "", semitones);
-        whatsApp.replyText(from, aviso);
-
-        workers.submit(() -> process(from, urls, semitones));
+    static String accompanyingInstructions(String body, int appliedSemitones) {
+        if (body == null) return "";
+        String text = body.replaceAll("(?i)https?://\\S+", " ");
+        // Esta indicacion ya fue aplicada al descargar; no pedir a Gemini que la repita.
+        if (appliedSemitones != 0) text = text.replaceAll("(?i)\\btono\\s*[+-]?\\d{1,2}\\b", " ");
+        text = text.replaceAll("\\s+", " ").strip();
+        return text.codePoints().anyMatch(Character::isLetterOrDigit) ? text : "";
     }
 
     /** Resultado de procesar un link: etiqueta si salio bien, o la url que fallo. */
     private record Resultado(String etiqueta, String urlFallida, String audioId) {}
 
-    private void process(String from, List<String> urls, int semitones) {
+    void process(String from, List<String> urls, int semitones, String originalMessage) {
         try {
+            String instructions = accompanyingInstructions(originalMessage, semitones);
+            boolean followUp = !instructions.isEmpty() && playlistTone.naturalLanguageEnabled();
             var domingo = Fechas.proximoDomingo();
             var carpeta = Fechas.nombreCarpeta(domingo);
             var estructura = driveService.ensureSundayStructure(domingo);
@@ -205,7 +219,7 @@ public class SongPipeline {
                 sb.append("Subidas a *").append(carpeta).append("/Playlist*:\n");
                 ok.forEach(t -> sb.append("\u2022 ").append(t).append('\n'));
                 sb.append('\n').append(estructura.link());
-                if (semitones == 0) {
+                if (semitones == 0 && !followUp) {
                     sb.append("\n\nEscribe \"cambiar tonalidad\" y te preguntare que cancion quieres ajustar y cuantos semitonos subir o bajar.");
                 }
             }
@@ -218,7 +232,7 @@ public class SongPipeline {
             // - sin doc y ya hay 4+ canciones -> ofrecer crearlo
             // - con doc y entraron canciones nuevas -> ofrecer actualizarlo
             try {
-                if (!ok.isEmpty()) {
+                if (!ok.isEmpty() && !followUp) {
                     int total = driveService.listMp3Names(estructura.playlistId()).size();
                     String docName = "Letras - " + carpeta + ".docx";
                     var doc = driveService.findFile(docName, estructura.domingoId());
@@ -234,6 +248,11 @@ public class SongPipeline {
             }
 
             whatsApp.replyText(from, sb.toString().strip());
+
+            // Las letras/notas deben consultarse despues de que todas las subidas hayan terminado.
+            if (followUp && !uploadedIds.isEmpty()) {
+                playlistTone.handleAfterUpload(from, instructions, List.copyOf(uploadedIds));
+            }
 
         } catch (Exception e) {
             LOG.error("Error en pipeline", e);

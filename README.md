@@ -96,6 +96,13 @@ clave en Git. Sin estas variables, los comandos funcionan sin IA.
 
 Puedes hablar en lenguaje natural dentro del contexto de la playlist:
 
+También puedes acompañar uno o varios links con la petición, antes o después:
+«Te paso estas canciones, súbelas y prepárame las letras», «Crea las canciones
+y su letra» o «Baja estas y déjalas con sus notas y letras». Primero termina las
+descargas y después interpreta y ejecuta la petición adicional; no depende de
+usar una frase exacta. Los documentos se preparan con la playlist disponible,
+y se informan los links que no se pudieron descargar.
+
 - «Bájale dos semitonos a la de Ingrid» o «sube esa un poquito» (pregunta cuánto).
 - «¿Y las notas?» o «trae las notas de esa canción»: copia los acordeorios del histórico.
 - «Crea las notas y sube esa a dos semitonos»: atiende ambas peticiones.
