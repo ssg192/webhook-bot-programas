@@ -24,8 +24,8 @@ public class GeminiSongInterpreter {
     boolean enabled;
     @ConfigProperty(name = "bot.gemini.api-key")
     Optional<String> apiKey = Optional.empty();
-    @ConfigProperty(name = "bot.gemini.model", defaultValue = "gemini-2.5-flash-lite")
-    String model = "gemini-2.5-flash-lite";
+    @ConfigProperty(name = "bot.gemini.model", defaultValue = "gemini-3.1-flash-lite")
+    String model = "gemini-3.1-flash-lite";
 
     private final HttpClient client = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5)).build();

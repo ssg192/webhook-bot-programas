@@ -91,7 +91,7 @@ También sigue funcionando mandar un link de YouTube acompañado de `tono -2`.
 ## Lenguaje natural con Gemini (opcional)
 
 Activa `GEMINI_ENABLED=true` y configura `GEMINI_API_KEY` como secreto en el
-servidor. `GEMINI_MODEL` usa `gemini-2.5-flash-lite` por defecto. No guardes la
+servidor. `GEMINI_MODEL` usa `gemini-3.1-flash-lite` por defecto. No guardes la
 clave en Git. Sin estas variables, los comandos funcionan sin IA.
 
 Puedes escribir «bájale dos semitonos a la de Ingrid», «la segunda» o «súbela
