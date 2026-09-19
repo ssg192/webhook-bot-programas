@@ -99,6 +99,9 @@ Puedes hablar en lenguaje natural dentro del contexto de la playlist:
 - «Bájale dos semitonos a la de Ingrid» o «sube esa un poquito» (pregunta cuánto).
 - «¿Y las notas?» o «trae las notas de esa canción»: copia los acordeorios del histórico.
 - «Crea las notas y sube esa a dos semitonos»: atiende ambas peticiones.
+- «Créame las notas y las letras de las canciones»: copia las notas y crea o actualiza
+  el documento de letras de toda la playlist. Si hay varias versiones de notas,
+  solicita elegirlas; la preparación de letras continúa de forma independiente.
 - «Arma el documento de letras» o «¿qué canciones tenemos?».
 - «Elimina esa canción de la playlist»: manda sólo ese audio a la papelera, recuperable.
 

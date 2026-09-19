@@ -211,6 +211,14 @@ public class PlaylistToneFlow {
                 whatsApp.replyText(from, list.toString());
                 return;
             }
+            if (result.intent().equals("notes_lyrics")) {
+                if (!pending.remove(from, previous)) return;
+                whatsApp.replyText(from, "Voy a buscar las notas y preparar el documento de letras de las canciones de la playlist.");
+                // Cada flujo informa su resultado y maneja sus errores de forma independiente.
+                pipeline.generarNotas(from, null);
+                pipeline.generarLetras(from);
+                return;
+            }
             if (result.intent().equals("lyrics")) {
                 if (!pending.remove(from, previous)) return;
                 pipeline.generarLetras(from);

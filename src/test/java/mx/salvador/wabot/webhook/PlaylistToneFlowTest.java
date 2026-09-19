@@ -367,6 +367,28 @@ class PlaylistToneFlowTest {
         assertTrue(drive.events.isEmpty());
     }
 
+    @Test
+    void combinedNotesAndLyricsProcessesWholePlaylistWithoutTouchingAudio() {
+        flow.rememberSong("a", "2");
+        flow.interpreter = new FakeInterpreter("notes_lyrics", 0, 0);
+        flow.handleNatural("a", "creame las notas y la letra de las canciones");
+        assertEquals(1, pipeline.notesRequests.size());
+        assertNull(pipeline.notesRequests.get(0));
+        assertEquals(1, pipeline.lyricsRequests);
+        assertTrue(drive.events.isEmpty());
+        assertTrue(pitch.shifts.isEmpty());
+    }
+
+    @Test
+    void cancelledCombinedDocumentsRequestDoesNotGenerateEitherDocument() {
+        var ai = new FakeInterpreter("notes_lyrics", 0, 0);
+        ai.duringInterpret = () -> flow.handle("a", "cancelar");
+        flow.interpreter = ai;
+        flow.handleNatural("a", "notas y letras por favor");
+        assertTrue(pipeline.notesRequests.isEmpty());
+        assertEquals(0, pipeline.lyricsRequests);
+    }
+
     private static class FakePipeline extends SongPipeline {
         List<String> notesRequests = new ArrayList<>();
         int lyricsRequests;

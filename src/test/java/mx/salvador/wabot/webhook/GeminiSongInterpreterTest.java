@@ -99,8 +99,10 @@ class GeminiSongInterpreterTest {
             assertThrows(IOException.class, () -> ai.parse("{\"intent\":\"" + intent + "\",\"song\":1,\"semitones\":2}", 2));
         }
         assertEquals("tone_notes", ai.parse("{\"intent\":\"tone_notes\",\"song\":1,\"semitones\":2}", 2).intent());
-        for (String intent : List.of("lyrics", "list", "cancel")) {
+        for (String intent : List.of("lyrics", "notes_lyrics", "list", "cancel")) {
             assertEquals(intent, ai.parse("{\"intent\":\"" + intent + "\",\"song\":0,\"semitones\":0}", 2).intent());
+            assertThrows(IOException.class, () -> ai.parse("{\"intent\":\"" + intent + "\",\"song\":1,\"semitones\":0}", 2));
+            assertThrows(IOException.class, () -> ai.parse("{\"intent\":\"" + intent + "\",\"song\":0,\"semitones\":2}", 2));
         }
     }
 

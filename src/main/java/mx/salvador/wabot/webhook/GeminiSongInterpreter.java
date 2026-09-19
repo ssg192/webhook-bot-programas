@@ -74,7 +74,7 @@ public class GeminiSongInterpreter {
             throw new IOException("Solicitud fuera de limites");
         }
         var schema = Map.of("type", "OBJECT", "properties", Map.of(
-                "intent", Map.of("type", "STRING", "enum", List.of("tone", "tone_notes", "notes", "lyrics", "list", "remove", "cancel", "clarify", "unrelated")),
+                "intent", Map.of("type", "STRING", "enum", List.of("tone", "tone_notes", "notes", "lyrics", "notes_lyrics", "list", "remove", "cancel", "clarify", "unrelated")),
                 "song", Map.of("type", "INTEGER"),
                 "semitones", Map.of("type", "INTEGER")),
                 "required", List.of("intent", "song", "semitones"));
@@ -93,6 +93,10 @@ public class GeminiSongInterpreter {
                 intent=tone solo si pide cambiar tono o responde a la seleccion/ajuste pendiente.
                 intent=notes para 'crea las notas', 'y las notas?', 'busca los acordeorios', etc.
                 intent=lyrics para crear/actualizar el documento de letras; song=0, semitones=0.
+                intent=notes_lyrics si pide notas Y letras de las canciones en la misma peticion:
+                'creame las notas y la letra de las canciones', 'notas y letras', 'hazme ambas'.
+                Atiende las dos acciones para toda la playlist; song=0, semitones=0.
+                No reduzcas esta peticion a solo notes o solo lyrics.
                 intent=list para consultar que canciones hay en la playlist; song=0, semitones=0.
                 intent=cancel para cancelar la peticion pendiente; song=0, semitones=0.
                 Las notas se copian del historico; no se generan ni se transpone su contenido.
@@ -164,10 +168,10 @@ public class GeminiSongInterpreter {
         String intent = result.path("intent").asText();
         int song = result.path("song").intValue();
         int semitones = result.path("semitones").intValue();
-        if (!List.of("tone", "tone_notes", "notes", "lyrics", "list", "remove", "cancel", "clarify", "unrelated").contains(intent)
+        if (!List.of("tone", "tone_notes", "notes", "lyrics", "notes_lyrics", "list", "remove", "cancel", "clarify", "unrelated").contains(intent)
                 || song < 0 || song > songCount || semitones < -12 || semitones > 12
                 || (List.of("notes", "remove").contains(intent) && semitones != 0)
-                || (List.of("lyrics", "list", "cancel", "clarify", "unrelated").contains(intent) && (song != 0 || semitones != 0))) {
+                || (List.of("lyrics", "notes_lyrics", "list", "cancel", "clarify", "unrelated").contains(intent) && (song != 0 || semitones != 0))) {
             throw new IOException("Interpretacion fuera de limites");
         }
         return new Interpretation(intent, song, semitones);
