@@ -79,7 +79,7 @@ public class SongPipeline {
             whatsApp.replyText(from, "No encontre notas de " + choice.song() + ". ¿Quieres buscar en internet una version base? Responde si o no.");
         } else {
             whatsApp.replyText(from, "¿En que tono busco la base de " + choice.song()
-                    + "? Escribe original o, por ejemplo, en Re. Para salir, cancelar.");
+                    + "? Escribe original, D (Re), D# (Re sostenido) o Dm (Re menor). Tambien puedes escribir el nombre del tono. Para salir, cancelar.");
         }
     }
 
@@ -143,7 +143,7 @@ public class SongPipeline {
         String text = body.strip().toLowerCase(java.util.Locale.ROOT).replaceAll("[.!¡¿?]+$", "").strip().replaceAll("\\s+", " ");
         if (text.matches("no|no gracias|no buscar|omitir")) return "decline";
         if (!choice.authorized() && text.matches("si|sí|si busca|sí busca|buscar|busca|buscar en la web")) return "search";
-        if (choice.authorized() && text.matches("(?:(?:conservar|conserva|en) )?(?:el )?(?:tono )?original")) return "original";
+        if (choice.authorized() && text.matches("(?:(?:conservar|conserva|en) )?(?:(?:el|la) )?(?:(?:tono|tonalidad|version) )?original")) return "original";
         if (choice.authorized()) return draftKeyReply(text);
         return null;
     }

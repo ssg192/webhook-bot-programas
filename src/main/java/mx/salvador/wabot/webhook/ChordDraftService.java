@@ -72,10 +72,12 @@ public class ChordDraftService {
         if (song.isBlank() || song.length() > 350)
             throw new IOException("Cancion o tonalidad fuera de limites");
         List<Source> sources = search(song + (targetKey.isEmpty() ? " tono original" : " tonalidad " + targetKey));
-        if (sources.isEmpty()) throw new IOException("No encontre una pagina con acordes utiles; no genere un documento vacio");
+        if (sources.isEmpty()) throw new IOException("No pude recuperar una pagina de acordes completa. Los resumenes y videos no bastan; comparte una pagina de acordes de la version que buscas");
         String input = json.writeValueAsString(Map.of("cancionSolicitada", song, "linkVersionSolicitada", versionUrl, "tonoSolicitado", targetKey.isEmpty() ? "original" : targetKey, "fuentes", sources));
         String instructions = """
-                Busca la VERSION ORIGINAL de la cancion y prepara una hoja de ensayo de una sola pagina fuente.
+                Identifica la cancion solicitada por titulo Y artista/version y prepara una hoja de
+                ensayo de una sola pagina fuente. 'Original' se refiere al tono, no autoriza cambiar
+                de cancion, artista, traduccion ni arreglo. El link solo identifica la version: no lo has escuchado.
                 Conserva los bloques de letra y acordes juntos, con acordes encima de la linea cantada,
                 no una lista resumida de progresiones. Usa contenido cuya reproduccion este permitida.
                 No cruces letras de una pagina con acordes de otra, ni recurras al historico de documentos.
@@ -90,8 +92,13 @@ public class ChordDraftService {
                 para inventar acordes o completar letras ausentes. No incluyas publicidad, menus,
                 tablaturas ni explicaciones ajenas a la hoja de ensayo.
                 No has escuchado el audio: no afirmes conocer el tono o arreglo del cover del link.
-                Busca coincidencia de titulo y artista. Si solo existe otra version/original, puedes usarla
-                como base y reference debe identificar esa version. No mezcles tonalidades entre fuentes.
+                Busca coincidencia de titulo y artista. No sustituyas por otra cancion de titulo parecido,
+                otra traduccion o un tema del mismo artista. Ante duda, identityMatch=false; no adivines.
+                Devuelve tambien source (indice de la unica pagina elegida), identityMatch (boolean)
+                y complete (boolean). complete=true SOLO si la pagina contiene la hoja completa Y
+                has conservado todas sus estrofas, coros, puentes, intros, finales y repeticiones presentes.
+                Si solo hay un extracto, contenido bloqueado, resumen o faltan bloques, complete=false.
+                No declares completa una hoja solo porque hayas terminado de generar JSON.
                 Devuelve JSON con reference (titulo/artista/version de referencia, maximo 160 caracteres),
                 key (C, Db, Dm, etc., o vacio si no se indica explicitamente), keySource (indice 1-based,
                 0 si key vacio), sections (objetos {name,lines,source}). name identifica la seccion,
@@ -106,7 +113,7 @@ public class ChordDraftService {
                 al tono solicitado. Si pide original, conserva el tono encontrado. key indica el tono
                 de los acordes entregados, no el de partida. El servidor los copiara tal como los entregues.
                 Conserva notacion latina, sostenidos/bemoles Unicode, inversiones y extensiones.
-                Si no hay estructura documentada usa Base armonica. Una sola progresion util es suficiente.
+                Conserva toda la estructura documentada. No resumas ni omitas estrofas para ahorrar espacio.
                 No mezcles acordes de referencias con claves/capo distintos. Usa solamente fuentes que
                 aporten informacion util. Elige una sola pagina para copiar la hoja completa.
                 Una pagina coincidente con acordes es suficiente. corroboration es indice de una segunda
@@ -122,7 +129,24 @@ public class ChordDraftService {
         if (!candidate.path("finishReason").asText().equals("STOP")) throw new IOException("La investigacion quedo incompleta; no cree notas");
         var text = new StringBuilder();
         for (var part : candidate.path("content").path("parts")) if (!part.path("thought").asBoolean()) text.append(part.path("text").asText());
-        return parse(text.toString(), sources);
+        return parseResearch(text.toString(), sources);
+    }
+
+    Draft parseResearch(String text, List<Source> sources) throws IOException {
+        String payload = text.strip().replaceFirst("^```(?:json)?\\s*", "").replaceFirst("\\s*```$", "");
+        var result = json.readTree(payload);
+        if (result == null || !result.path("identityMatch").isBoolean() || !result.path("identityMatch").booleanValue())
+            throw new IOException("No pude confirmar que la pagina sea de esa cancion y version. Indica el artista y la version o comparte su pagina de acordes");
+        if (!result.path("complete").isBoolean() || !result.path("complete").booleanValue())
+            throw new IOException("La fuente o la hoja generada esta incompleta; faltan bloques. Comparte una pagina con la letra y acordes completos");
+        var sourceNode = result.path("source");
+        int selected = sourceNode.asInt(0);
+        if (!sourceNode.isIntegralNumber() || selected < 1 || selected > sources.size())
+            throw new IOException("La respuesta no identifica una pagina de acordes valida");
+        var draft = parse(payload, sources);
+        if (draft.sections().stream().anyMatch(section -> section.source() != selected))
+            throw new IOException("La respuesta mezclo paginas; necesito una sola hoja de la version solicitada");
+        return draft;
     }
 
     List<Source> search(String song) throws Exception {
@@ -134,10 +158,10 @@ public class ChordDraftService {
         var seen = new HashSet<String>();
         for (var result : json.readTree(response).path("results")) {
             String url = result.path("url").asText(), content = result.path("raw_content").asText("");
-            if (content.isBlank()) content = result.path("content").asText();
-            if (!safeUrl(url) || content.isBlank() || !seen.add(url)) continue;
+            // Snippets and silently truncated pages cannot establish a complete chart.
+            if (!safeUrl(url) || videoUrl(url) || content.isBlank() || content.length() > 40000 || !seen.add(url)) continue;
             String title = result.path("title").asText();
-            sources.add(new Source(title.substring(0, Math.min(180, title.length())), url, content.substring(0, Math.min(20000, content.length()))));
+            sources.add(new Source(title.substring(0, Math.min(180, title.length())), url, content));
             if (sources.size() == 6) break;
         }
         return List.copyOf(sources);
@@ -214,6 +238,12 @@ public class ChordDraftService {
     static boolean safeUrl(String url) {
         try { var uri = URI.create(url); return ("https".equals(uri.getScheme()) || "http".equals(uri.getScheme())) && uri.getHost() != null && uri.getUserInfo() == null; }
         catch (IllegalArgumentException e) { return false; }
+    }
+
+    static boolean videoUrl(String url) {
+        String host = URI.create(url).getHost().toLowerCase(Locale.ROOT);
+        return List.of("youtube.com", "youtu.be", "youtube-nocookie.com", "vimeo.com", "tiktok.com")
+                .stream().anyMatch(domain -> host.equals(domain) || host.endsWith("." + domain));
     }
 
     Document render(String song, String versionUrl, Draft draft, String targetKey) throws Exception {

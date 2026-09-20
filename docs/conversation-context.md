@@ -69,14 +69,18 @@ Responder `no` no hace búsquedas ni genera documentos. Tras aceptar (`si`), pre
 el tono (`original`, `en Re`, `F#m`, etc.) ANTES de buscar. La búsqueda y el pedido a
 la IA incluyen ese tono. Con el resultado crea directamente en Notas/
 un `BORRADOR - ... .docx` con letra/acordes intercalados, estructura disponible y fuente.
-No se bloquea por fuentes distintas, nombres de secciones,
-notación de acordes o coincidencia con el texto recuperado. Se acepta la propuesta de la IA como
+La investigación requiere una única fuente y declaraciones explícitas de identidad
+y completitud de la IA. Ante ambigüedad o contenido incompleto, pide artista/versión
+o una página completa y no sube un documento. No comprueba musicalmente los
+acordes ni exige coincidencia literal con el texto recuperado. Se acepta la propuesta de la IA como
 borrador; el DOCX advierte que los acordes no se verificaron contra las fuentes ni
-contra el audio. Solo se comprueba que la respuesta tenga contenido utilizable para
-el DOCX; se conservan los controles de cuota, permisos, cancelación y archivos existentes.
+contra el audio. Las declaraciones de la IA no son una garantía independiente de
+identidad o completitud: el documento sigue requiriendo revisión. Se conservan los
+controles de cuota, permisos, cancelación y archivos existentes.
 El prompt pide conservar letra y acordes de una misma página con reproducción permitida,
 sin cruzar con el histórico ni completar letras ausentes. No incluye tablaturas. No escucha audio ni verifica
-el arreglo del cover: la referencia puede ser la original y siempre se indica que
+el arreglo del cover: no se autoriza sustituir por otra canción, traducción o versión.
+El tono `original` no significa cambiar de canción. Siempre se indica que
 debe contrastarse contra el link. Los links de nuevas descargas se guardan como referencia;
 para canciones anteriores puede no disponer del link.
 
@@ -100,6 +104,11 @@ Solo muestra enlaces de las fuentes citadas por las secciones. No agrega
 reharmonizaciones de piano ni repeticiones inventadas. Los archivos existentes no se reemplazan.
 `el original`, `el tono original` y variantes simples se resuelven localmente en la
 pregunta de tono, sin requerir otra llamada a Gemini.
+También se aceptan `en la original` y `en la tonalidad original`. La pregunta muestra
+`D`, `D#` y `Dm`, y sigue aceptando sus nombres en español.
+Solo se usa `raw_content`, nunca el resumen `content`; se excluyen páginas de video.
+Las páginas de más de 40 000 caracteres se descartan en vez de recortarse. Si no queda
+una página utilizable se informa al usuario; no se agregan consultas ni reintentos pagos.
 Las fuentes pueden discrepar o estar equivocadas: sigue siendo un borrador, no una partitura validada.
 
 ## Referencias oficiales consultadas (19 de septiembre de 2026)

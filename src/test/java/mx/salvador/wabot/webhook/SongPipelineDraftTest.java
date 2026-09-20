@@ -63,6 +63,10 @@ class SongPipelineDraftTest {
         assertEquals("D", SongPipeline.draftKeyReply("en Re"));
         assertEquals("F#m", SongPipeline.draftKeyReply("Fa sostenido menor"));
         assertEquals("Bb", SongPipeline.draftKeyReply("Bb"));
+        assertEquals("D", SongPipeline.draftKeyReply("D"));
+        assertEquals("D#", SongPipeline.draftKeyReply("D#"));
+        assertEquals("D#", SongPipeline.draftKeyReply("Re sostenido"));
+        assertEquals("Dm", SongPipeline.draftKeyReply("Dm"));
         assertNull(SongPipeline.draftKeyReply("baja esa cancion"));
     }
 
@@ -71,7 +75,7 @@ class SongPipelineDraftTest {
         var permission = pipeline.pendingDraftChoice("sender");
         assertNull(pipeline.draftDecision("el original", permission));
         pipeline.chooseDraft("sender", permission, "search");
-        for (String text : List.of("original", "el original", "El tono original.", "en el original", "conserva el original"))
+        for (String text : List.of("original", "el original", "El tono original.", "en el original", "conserva el original", "en la original", "la original", "en la tonalidad original"))
             assertEquals("original", pipeline.draftDecision(text, pipeline.pendingDraftChoice("sender")));
         assertNull(pipeline.draftDecision("no quiero el original", pipeline.pendingDraftChoice("sender")));
         assertEquals(0, drafts.calls);

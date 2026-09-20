@@ -84,7 +84,7 @@ class ChordDraftServiceTest {
                 assertEquals("basic", request.path("search_depth").asText());
                 assertFalse(request.path("auto_parameters").asBoolean());
                 assertFalse(request.path("include_answer").asBoolean());
-                return "{\"results\":[{\"url\":\"javascript:alert(1)\",\"content\":\"C G\"},{\"title\":\"Tema\",\"url\":\"https://fuente.example/song\",\"content\":\"C G Am F\"}]}";
+                return "{\"results\":[{\"url\":\"javascript:alert(1)\",\"raw_content\":\"C G\"},{\"title\":\"Tema\",\"url\":\"https://fuente.example/song\",\"raw_content\":\"C G Am F\"}]}";
             }
         };
         stub.json = service.json;
@@ -148,7 +148,7 @@ class ChordDraftServiceTest {
                 assertTrue(json.readTree(body).path("query").asText().contains("tonalidad D"));
                 assertTrue(json.readTree(body).path("query").asText().contains("acordes guitarra"));
                 return json.writeValueAsString(java.util.Map.of("results", List.of(java.util.Map.of(
-                        "title", "Tema", "url", "https://fuente.example/song", "content", "C G"))));
+                        "title", "Tema", "url", "https://fuente.example/song", "raw_content", "C G"))));
             }
         };
         stub.json = service.json;
@@ -156,7 +156,7 @@ class ChordDraftServiceTest {
             @Override String exchange(String body) throws Exception {
                 var input = service.json.readTree(service.json.readTree(body).path("contents").get(0).path("parts").get(0).path("text").asText());
                 assertEquals("D", input.path("tonoSolicitado").asText());
-                String result = "{\"reference\":\"Tema\",\"key\":\"D\",\"sections\":[{\"name\":\"Base\",\"chords\":[\"D\",\"A\"],\"source\":1}]}";
+                String result = "{\"identityMatch\":true,\"complete\":true,\"source\":1,\"reference\":\"Tema\",\"key\":\"D\",\"sections\":[{\"name\":\"Base\",\"chords\":[\"D\",\"A\"],\"source\":1}]}";
                 return service.json.writeValueAsString(java.util.Map.of("candidates", List.of(java.util.Map.of(
                         "finishReason", "STOP", "content", java.util.Map.of("parts", List.of(java.util.Map.of("text", result)))))));
             }
@@ -208,5 +208,32 @@ class ChordDraftServiceTest {
         }
         String bad = "{\"reference\":\"Tema\",\"sections\":[{\"lines\":[{\"chords\":{}}]}]}";
         assertThrows(IOException.class, () -> service.parse(bad, sources));
+    }
+
+    @Test void researchRequiresExplicitIdentityCompletenessAndSingleSource() throws Exception {
+        String checked = draft.replace("\"reference\":", "\"identityMatch\":true,\"complete\":true,\"source\":1,\"reference\":");
+        assertNotNull(service.parseResearch(checked, sources));
+        assertTrue(assertThrows(IOException.class, () -> service.parseResearch(checked.replace("\"complete\":true", "\"complete\":false"), sources)).getMessage().contains("incompleta"));
+        assertTrue(assertThrows(IOException.class, () -> service.parseResearch(checked.replace("\"identityMatch\":true", "\"identityMatch\":false"), sources)).getMessage().contains("version"));
+        assertThrows(IOException.class, () -> service.parseResearch(draft, sources));
+        assertThrows(IOException.class, () -> service.parseResearch(checked.replace("\"source\":1}]", "\"source\":2}]"), sources));
+    }
+
+    @Test void searchDoesNotUseVideoSnippetsOrSilentlyCutOffPages() throws Exception {
+        var stub = new ChordDraftService() {
+            @Override String searchExchange(String body) throws Exception {
+                return json.writeValueAsString(java.util.Map.of("results", List.of(
+                        java.util.Map.of("url", "https://www.youtube.com/watch?v=abc", "raw_content", "video description"),
+                        java.util.Map.of("url", "https://page.example/snippet", "content", "short summary"),
+                        java.util.Map.of("url", "https://page.example/large", "raw_content", "x".repeat(40001)),
+                        java.util.Map.of("url", "https://page.example/chart", "raw_content", "whole page"))));
+            }
+        };
+        stub.json = service.json;
+        var found = stub.search("Tema");
+        assertEquals(1, found.size());
+        assertEquals("whole page", found.get(0).content());
+        assertTrue(ChordDraftService.videoUrl("https://m.youtube.com/watch?v=abc"));
+        assertFalse(ChordDraftService.videoUrl("https://notyoutube.com/chart"));
     }
 }
