@@ -26,6 +26,62 @@ class SongPipelineDraftTest {
     }
     @AfterEach void close() { pipeline.shutdown(); }
 
+    @Test void declinedSongIsNotOfferedAgainInGeneralRequestButExplicitRequestCanChangeIt() {
+        pipeline.generarNotas("sender", null);
+        pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "decline");
+        messages.clear();
+        pipeline.generarNotas("sender", null);
+        assertNull(pipeline.pendingDraftChoice("sender"));
+        assertTrue(messages.stream().noneMatch(s -> s.contains("¿Quieres buscar")));
+        assertEquals(0, drafts.calls);
+        pipeline.generarNotas("sender", "Tema.m4a");
+        assertNotNull(pipeline.pendingDraftChoice("sender"));
+    }
+
+    @Test void registeredPresentNotesAreNotCopiedOrOfferedAgain() {
+        pipeline.workState.copied("Tema", "previous", "Tema.pdf", "notes");
+        drive.present = true;
+        pipeline.generarNotas("sender", null);
+        assertEquals(0, drafts.calls);
+        assertEquals(0, drive.uploads);
+        assertNull(pipeline.pendingDraftChoice("sender"));
+        drive.present = false;
+        pipeline.generarNotas("sender", null);
+        assertNotNull(pipeline.pendingDraftChoice("sender"));
+    }
+
+    @Test void pendingKeyQuestionIsPreservedWithoutRepeatingMenu() {
+        pipeline.generarNotas("sender", null);
+        pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "search");
+        var pending = pipeline.pendingDraftChoice("sender");
+        messages.clear();
+        pipeline.generarNotas("sender", null);
+        assertSame(pending, pipeline.pendingDraftChoice("sender"));
+        assertTrue(messages.stream().noneMatch(s -> s.contains("¿Quieres buscar") || s.contains("Sin notas en el historico")));
+    }
+
+    @Test void dailyDecisionSurvivesRestartAndIsScopedToSender(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) {
+        var store = new ContextStore();
+        store.json = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
+        store.filename = dir.resolve("context.json").toString();
+        pipeline.contextStore = store;
+        pipeline.generarNotas("sender", null);
+        pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "decline");
+        var restored = new SongPipeline();
+        restored.contextStore = store;
+        restored.driveService = drive;
+        restored.chordDrafts = drafts;
+        restored.whatsApp = pipeline.whatsApp;
+        restored.lyricsHistory = pipeline.lyricsHistory;
+        try {
+            restored.init();
+            restored.generarNotas("sender", null);
+            assertNull(restored.pendingDraftChoice("sender"));
+            restored.generarNotas("other", null);
+            assertNotNull(restored.pendingDraftChoice("other"));
+        } finally { restored.shutdown(); }
+    }
+
     @Test void missingHistoryGeneratesDraftInNotesAndRegistersItsId() {
         pipeline.workState.reference("Tema", "https://youtu.be/exact-version");
         pipeline.generarNotas("sender", null);
@@ -148,7 +204,8 @@ class SongPipelineDraftTest {
         }
     }
     private static class FakeDrive extends DriveService {
-        int uploads; String destination, name; File existing;
+        int uploads; String destination, name; File existing; boolean present;
+        @Override public boolean noteCopyPresent(String id, String folder) { return present; }
         @Override public EstructuraDomingo ensureSundayStructure(LocalDate date) { return new EstructuraDomingo("playlist", "notes", "sunday", "folder-link"); }
         @Override public List<String> listMp3Names(String folder) { return List.of("Tema.m4a"); }
         @Override public File findFile(String name, String folder) { return existing; }

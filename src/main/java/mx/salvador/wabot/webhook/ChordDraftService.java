@@ -120,7 +120,7 @@ public class ChordDraftService {
                 Si no hay evidencia suficiente, devuelve sections=[] y key vacio, no inventes una plantilla.
                 Devuelve solo JSON sin markdown. Los nombres de seccion no pueden contener letras cantadas.
                 """;
-        var response = gemini.exchange(json.writeValueAsString(Map.of(
+        var response = generateWithRetry(json.writeValueAsString(Map.of(
                 "systemInstruction", Map.of("parts", List.of(Map.of("text", instructions))),
                 "contents", List.of(Map.of("role", "user", "parts", List.of(Map.of("text", input)))),
                 "generationConfig", Map.of("responseMimeType", "application/json", "temperature", 0, "maxOutputTokens", 6000))));
@@ -144,6 +144,21 @@ public class ChordDraftService {
         return parse(text, sources);
     }
 
+    String generateWithRetry(String body) throws Exception {
+        try { return gemini.exchange(body); }
+        catch (GeminiSongInterpreter.Failure e) {
+            if (!e.code().equals("GEMINI_HTTP_503")) throw e;
+            LOG.warn("notes-web stage=gemini retry=1 reason=HTTP_503 reuse_sources=true");
+            retryPause();
+            return gemini.exchange(body); // One retry only; never retry exhausted quota.
+        }
+    }
+
+    void retryPause() throws InterruptedException {
+        try { Thread.sleep(1000 + java.util.concurrent.ThreadLocalRandom.current().nextInt(501)); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw e; }
+    }
+
     private static int sourceIndex(com.fasterxml.jackson.databind.JsonNode node, List<Source> sources) {
         if (node.isObject()) {
             int index = sourceIndex(node.path("url"), sources);
@@ -165,13 +180,14 @@ public class ChordDraftService {
         String trace = UUID.randomUUID().toString().substring(0, 8);
         long started = System.nanoTime();
         String query = song + " acordes guitarra letra version original";
-        LOG.infof("notes-web search=%s start query=%s depth=basic max_results=6 raw_content=text opens_links=false", trace, logText(query));
+        LOG.infof("notes-web search=%s start query=%s depth=basic max_results=6 raw_content=text extract_missing_max=5", trace, logText(query));
         try {
         reserveSearch();
         String response = searchExchange(json.writeValueAsString(Map.of("query", query,
                 "search_depth", "basic", "auto_parameters", false, "max_results", 6,
                 "include_answer", false, "include_raw_content", "text")));
         var sources = new ArrayList<Source>();
+        var missing = new LinkedHashMap<String, String>();
         var seen = new HashSet<String>();
         var results = json.readTree(response).path("results");
         LOG.infof("notes-web search=%s received results=%d results_array=%s response_chars=%d", trace, results.size(), results.isArray(), response.length());
@@ -186,10 +202,37 @@ public class ChordDraftService {
             LOG.infof("notes-web search=%s result=%d page=%s title=%s raw_chars=%d snippet_chars=%d decision=%s",
                     trace, rank, logUrl(url), logText(result.path("title").asText()), content.length(),
                     result.path("content").asText("").length(), reason);
+            if (reason.equals("missing_raw_content") && missing.size() < 5)
+                missing.putIfAbsent(url, result.path("title").asText(""));
             if (!reason.equals("accepted")) continue;
             String title = result.path("title").asText();
             sources.add(new Source(title.substring(0, Math.min(180, title.length())), url, content));
             if (sources.size() == 6) break;
+        }
+        if (!missing.isEmpty()) {
+            LOG.infof("notes-web search=%s stage=extract requested=%d", trace, missing.size());
+            try {
+                reserveSearch(); // Basic extraction batch <=5: reserve one extra quota unit.
+                var extracted = json.readTree(extractExchange(json.writeValueAsString(Map.of(
+                        "urls", List.copyOf(missing.keySet()), "extract_depth", "basic", "format", "text"))));
+                for (var item : extracted.path("results")) {
+                    String url = item.path("url").asText(""), content = item.path("raw_content").asText("");
+                    String decision = !missing.containsKey(url) ? "unrequested_url" : content.isBlank() ? "empty"
+                            : content.length() > 40000 ? "too_large" : seen.contains(url) ? "duplicate" : "accepted";
+                    LOG.infof("notes-web search=%s stage=extract page=%s chars=%d decision=%s", trace, logUrl(url), content.length(), decision);
+                    if (decision.equals("accepted") && sources.size() < 6) {
+                        seen.add(url);
+                        String title = missing.get(url);
+                        sources.add(new Source(title.substring(0, Math.min(180, title.length())), url, content));
+                    }
+                }
+                LOG.infof("notes-web search=%s stage=extract failed_results=%d", trace, extracted.path("failed_results").size());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt(); throw e;
+            } catch (Exception e) {
+                LOG.warnf("notes-web search=%s stage=extract failed type=%s retained_sources=%d", trace, e.getClass().getSimpleName(), sources.size());
+                if (sources.isEmpty()) throw e;
+            }
         }
         LOG.infof("notes-web search=%s end accepted=%d examined=%d elapsed_ms=%d", trace, sources.size(), rank, (System.nanoTime() - started) / 1_000_000);
         return List.copyOf(sources);
@@ -215,11 +258,19 @@ public class ChordDraftService {
     }
 
     String searchExchange(String body) throws Exception {
-        var request = HttpRequest.newBuilder(URI.create("https://api.tavily.com/search"))
+        return tavilyExchange("search", body);
+    }
+
+    String extractExchange(String body) throws Exception {
+        return tavilyExchange("extract", body);
+    }
+
+    private String tavilyExchange(String operation, String body) throws Exception {
+        var request = HttpRequest.newBuilder(URI.create("https://api.tavily.com/" + operation))
                 .timeout(Duration.ofSeconds(25)).header("Authorization", "Bearer " + apiKey.orElseThrow())
                 .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body)).build();
         var result = client.send(request, HttpResponse.BodyHandlers.ofString());
-        LOG.infof("notes-web provider=tavily status=%d response_chars=%d", result.statusCode(), result.body().length());
+        LOG.infof("notes-web provider=tavily operation=%s status=%d response_chars=%d", operation, result.statusCode(), result.body().length());
         if (List.of(429, 432, 433).contains(result.statusCode())) {
             pauseSearch(result.statusCode());
             throw new IOException("El buscador alcanzo su cuota o limite; busqueda pausada, sin pagos ni reintentos automaticos (HTTP " + result.statusCode() + ")");

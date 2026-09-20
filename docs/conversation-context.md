@@ -65,6 +65,14 @@ automáticas. Los límites 432/433 del proveedor pausan hasta el mes siguiente, 
 pausa 15 minutos. Al agotarse la cuota se avisa y no se sube un documento vacío.
 
 Cuando falten notas, primero pregunta si se quiere buscar una versión base en internet.
+Las decisiones `accepted`/`declined` se guardan en `dailyNoteDecisions` por usuario,
+canción y carpeta hasta terminar el día en America/Mexico_City; sobreviven reinicios
+con el almacén persistente configurado y se incluyen en el contexto de conversación.
+Una petición general de notas conserva esas decisiones (también si una búsqueda
+aceptada falló). Para cambiar una decisión se debe pedir esa canción explícitamente.
+Antes de volver a copiar o preguntar se comprueba en Drive la presencia de las
+copias registradas; no se confunde una copia de otra carpeta con la actual.
+Los menús todavía pendientes se conservan al pedir notas de nuevo, sin recrearlos.
 Responder `no` no hace búsquedas ni genera documentos. Tras aceptar (`si`), pregunta
 el tono (`original`, `en Re`, `F#m`, etc.) ANTES de buscar. La búsqueda y el pedido a
 la IA incluyen ese tono. Con el resultado crea directamente en Notas/
@@ -109,11 +117,24 @@ pregunta de tono, sin requerir otra llamada a Gemini.
 También se aceptan `en la original` y `en la tonalidad original`. La pregunta muestra
 `D`, `D#` y `Dm`, y sigue aceptando sus nombres en español.
 Solo se usa `raw_content`, nunca el resumen `content`; se excluyen páginas de video.
-Las páginas de más de 40 000 caracteres se descartan en vez de recortarse. Si no queda
-una página utilizable se informa al usuario; no se agregan consultas ni reintentos pagos.
+Las páginas de más de 40 000 caracteres se descartan en vez de recortarse.
+Si faltan cuerpos, se envían hasta cinco URLs de los resultados a Tavily Extract
+en un único lote `basic`, sin consultas recortadas ni proveedores alternativos.
+Se reserva una unidad adicional del límite mensual local para ese lote; el contador
+ahora cubre tanto búsquedas como extracciones. No habilita facturación: mantener
+el proveedor en su plan gratuito sin pay-as-you-go. Si falla la extracción se conservan
+las fuentes ya obtenidas; URLs inesperadas de la respuesta no se incorporan.
+Los logs `stage=extract` muestran el número de páginas, resultados y descartes.
+Gemini HTTP 503 se reintenta una vez tras 1–1.5 segundos, con el mismo contenido,
+sin repetir búsqueda/extracción. No se reintentan 429 ni otros errores.
 Las fuentes pueden discrepar o estar equivocadas: sigue siendo un borrador, no una partitura validada.
 
 ## Referencias oficiales consultadas (19 de septiembre de 2026)
+
+- [Tavily Extract](https://docs.tavily.com/documentation/api-reference/endpoint/extract):
+  extracción por lote de URLs, contenido recuperado y resultados fallidos.
+- [Gemini: reintentos](https://ai.google.dev/gemini-api/docs/troubleshooting):
+  espera acotada y reintentos limitados ante errores transitorios como HTTP 503.
 
 Diagnóstico de búsqueda: filtrar logs por `notes-web`. Cada búsqueda tiene `search=<id>`
 con consulta, cantidad de resultados, página (sin query/fragmento), título, tamaños de

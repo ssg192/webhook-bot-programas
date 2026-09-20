@@ -10,6 +10,49 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ChordDraftServiceTest {
+    @Test void extractsMissingPagesWithoutTrustingSnippetsOrUnexpectedUrls() throws Exception {
+        var stub = new ChordDraftService() {
+            @Override String searchExchange(String body) { return "{\"results\":[{\"url\":\"https://page.example/song\",\"title\":\"Tema\",\"content\":\"snippet\"}]}"; }
+            @Override String extractExchange(String body) throws Exception {
+                var request = json.readTree(body);
+                assertEquals("basic", request.path("extract_depth").asText());
+                assertEquals(1, request.path("urls").size());
+                return "{\"results\":[{\"url\":\"https://page.example/song\",\"raw_content\":\"full chart\"},{\"url\":\"https://other.example/song\",\"raw_content\":\"unrequested\"}]}";
+            }
+        };
+        stub.json = service.json;
+        stub.monthlyLimit = 2;
+        var result = stub.search("Tema");
+        assertEquals(1, result.size());
+        assertEquals("full chart", result.get(0).content());
+        assertThrows(IOException.class, stub::reserveSearch);
+    }
+
+    @Test void retries503OnceWithSamePayloadButNeverRetriesQuotaErrors() throws Exception {
+        for (int status : List.of(503, 429, 403)) {
+            var count = new java.util.concurrent.atomic.AtomicInteger();
+            var stub = new ChordDraftService() { @Override void retryPause() {} };
+            stub.gemini = new GeminiSongInterpreter() {
+                @Override String exchange(String body) throws Exception {
+                    assertEquals("payload", body);
+                    if (count.incrementAndGet() == 1) throw httpFailure(status);
+                    return "ok";
+                }
+            };
+            if (status == 503) { assertEquals("ok", stub.generateWithRetry("payload")); assertEquals(2, count.get()); }
+            else { assertThrows(GeminiSongInterpreter.Failure.class, () -> stub.generateWithRetry("payload")); assertEquals(1, count.get()); }
+        }
+    }
+
+    @Test void persistent503StopsAfterSecondAttempt() {
+        var count = new java.util.concurrent.atomic.AtomicInteger();
+        var stub = new ChordDraftService() { @Override void retryPause() {} };
+        stub.gemini = new GeminiSongInterpreter() {
+            @Override String exchange(String body) throws Exception { count.incrementAndGet(); throw httpFailure(503); }
+        };
+        assertThrows(GeminiSongInterpreter.Failure.class, () -> stub.generateWithRetry("payload"));
+        assertEquals(2, count.get());
+    }
     @Test void diagnosticLogsDoNotExposeUrlCredentialsOrAllowNewLines() {
         assertEquals("https://example.com/chart", ChordDraftService.logUrl("https://example.com/chart?token=secret#private"));
         assertEquals("[invalid-or-unsafe-url]", ChordDraftService.logUrl("https://user:secret@example.com/chart"));

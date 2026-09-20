@@ -118,6 +118,9 @@ public class GeminiSongInterpreter {
                 Si falta direccion/cantidad o hay un objetivo ambiguo en el lote entero, devuelve clarify.
                 Interpreta el significado, no busques frases exactas ni palabras clave obligatorias.
                 Si estadoTrabajo.preguntaBaseWeb existe, hay una pregunta de notas WEB, no de tono del audio.
+                decisionesNotasHoy guarda accepted/declined por cancion y carpeta: no interpretes una
+                peticion general de notas como permiso para revocar un rechazo o repetir una busqueda.
+                Si pide expresamente volver a buscar notas de una cancion, usa draft_notes con esa cancion.
                 intent=draft_reply, song=0, semitones=0, targetKey=search si acepta buscar en etapa permiso_busqueda,
                 decline si rechaza; en etapa elegir_tono, targetKey=original si quiere conservar los acordes
                 originales ('dejalo igual', 'el original') o la tonalidad inglesa como D para 'en Re'.

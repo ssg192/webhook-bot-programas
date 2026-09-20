@@ -51,6 +51,22 @@ public class SongPipeline {
     record DraftChoice(String song, String targetKey, DriveService.EstructuraDomingo folder,
                        java.time.LocalDate sunday, java.time.Instant expires, boolean authorized) {}
     private final Map<String, List<DraftChoice>> draftChoices = new ConcurrentHashMap<>();
+    record DailyNoteDecision(String song, String folder, java.time.LocalDate day, String decision) {}
+    private final Map<String, List<DailyNoteDecision>> dailyNoteDecisions = new ConcurrentHashMap<>();
+    java.time.LocalDate noteDecisionDay() { return java.time.LocalDate.now(java.time.ZoneId.of("America/Mexico_City")); }
+    private void rememberNoteDecision(String from, String song, String folder, String decision) {
+        dailyNoteDecisions.compute(from, (sender, saved) -> {
+            var entries = new ArrayList<>(saved == null ? List.<DailyNoteDecision>of() : saved);
+            entries.removeIf(entry -> !entry.day().equals(noteDecisionDay()) || (entry.song().equals(MusicWorkState.key(song)) && entry.folder().equals(folder)));
+            entries.add(new DailyNoteDecision(MusicWorkState.key(song), folder, noteDecisionDay(), decision));
+            return List.copyOf(entries);
+        });
+        if (contextStore != null) contextStore.save("dailyNoteDecisions", Map.copyOf(dailyNoteDecisions));
+    }
+    private boolean hasNoteDecision(String from, String song, String folder) {
+        return dailyNoteDecisions.getOrDefault(from, List.of()).stream().anyMatch(entry ->
+                entry.day().equals(noteDecisionDay()) && entry.folder().equals(folder) && entry.song().equals(MusicWorkState.key(song)));
+    }
 
     DraftChoice pendingDraftChoice(String from) {
         var list = draftChoices.get(from);
@@ -93,6 +109,7 @@ public class SongPipeline {
     void chooseDraft(String from, DraftChoice expected, String decision) {
         if (expected == null || pendingDraftChoice(from) != expected) return;
         if (decision.equals("decline")) {
+            rememberNoteDecision(from, expected.song(), expected.folder().notasId(), "declined");
             workState.note(expected.song(), "Busqueda web omitida por el usuario; no se creo documento");
             whatsApp.replyText(from, "De acuerdo, no creare notas de " + expected.song() + ".");
             nextDraftChoice(from, expected); return;
@@ -101,6 +118,7 @@ public class SongPipeline {
             if (!decision.equals("search")) { askDraftChoice(from, expected); return; }
             var ready = new DraftChoice(expected.song(), expected.targetKey(), expected.folder(), expected.sunday(), expected.expires(), true);
             if (replaceDraftChoice(from, expected, ready)) {
+                rememberNoteDecision(from, expected.song(), expected.folder().notasId(), "accepted");
                 workState.note(expected.song(), "Esperando tonalidad antes de buscar en internet");
                 askDraftChoice(from, ready);
             }
@@ -187,6 +205,8 @@ public class SongPipeline {
             Map<String, Object> state = new LinkedHashMap<>(workState.snapshot(songs, count == null ? 0 : count.get()));
             state.put("peticionesDocumentosEnEspera", afterDownloads.getOrDefault(from, List.of()).size());
             state.put("conversacion", whatsApp == null ? List.of() : whatsApp.conversation(from));
+            state.put("decisionesNotasHoy", dailyNoteDecisions.getOrDefault(from, List.of()).stream()
+                    .filter(entry -> entry.day().equals(noteDecisionDay())).toList());
             var draftChoice = pendingDraftChoice(from);
             if (draftChoice != null) state.put("preguntaBaseWeb", Map.of("cancion", draftChoice.song(),
                     "etapa", !draftChoice.authorized() ? "permiso_busqueda" : "elegir_tono",
@@ -281,6 +301,10 @@ public class SongPipeline {
     void init() {
         workState.attach(contextStore);
         if (contextStore != null) {
+            var decisions = contextStore.read("dailyNoteDecisions", new com.fasterxml.jackson.core.type.TypeReference<Map<String, List<DailyNoteDecision>>>() {});
+            if (decisions != null) decisions.forEach((sender, entries) -> {
+                if (entries != null) dailyNoteDecisions.put(sender, entries.stream().filter(entry -> entry != null && noteDecisionDay().equals(entry.day())).toList());
+            });
             var saved = contextStore.read("noteChoices", new com.fasterxml.jackson.core.type.TypeReference<Map<String, PendingNotes>>() {});
             if (saved != null) saved.forEach((from, value) -> {
                 if (value.expires().isAfter(java.time.Instant.now()) && value.sunday().equals(Fechas.proximoDomingo())) versionesPendientes.put(from, value);
@@ -603,8 +627,6 @@ public class SongPipeline {
     void generarNotas(String from, String selectedSong) {
         List<String> requestedSongs = new ArrayList<>();
         try {
-            versionesPendientes.remove(from);
-            persistNoteChoices();
             var domingo = Fechas.proximoDomingo();
             var carpeta = Fechas.nombreCarpeta(domingo);
             var estructura = driveService.ensureSundayStructure(domingo);
@@ -617,8 +639,7 @@ public class SongPipeline {
             }
 
             List<String> copiadas = new ArrayList<>();
-            requestedSongs.addAll(mp3s);
-            mp3s.forEach(song -> workState.note(song, "Buscando notas en el historico"));
+            int omitted = 0;
             List<String> sinNotas = new ArrayList<>();
             List<NoteChoice> elecciones = new ArrayList<>();
             var refs = lyricsHistory.refs(mp3s.stream()
@@ -626,6 +647,21 @@ public class SongPipeline {
 
             for (String mp3 : mp3s) {
                 String nombre = TitleCleaner.clean(mp3).nombre();
+                boolean present = false;
+                for (var copy : workState.copies(nombre)) {
+                    if (copy.folder().equals(estructura.notasId()) && driveService.noteCopyPresent(copy.id(), copy.folder())) { present = true; break; }
+                }
+                var pendingDrafts = draftChoices.getOrDefault(from, List.of());
+                var pendingNotes = versionesPendientes.get(from);
+                boolean pending = pendingDrafts.stream().anyMatch(item -> item.song().equals(MusicWorkState.key(nombre))
+                        && item.folder().notasId().equals(estructura.notasId()) && item.expires().isAfter(java.time.Instant.now()));
+                if (pendingNotes != null && pendingNotes.expires().isAfter(java.time.Instant.now()) && pendingNotes.sunday().equals(domingo))
+                    pending |= pendingNotes.choices().stream().anyMatch(item -> item.song().equals(nombre));
+                if (present || pending || (selectedSong == null && hasNoteDecision(from, nombre, estructura.notasId()))) {
+                    omitted++; continue;
+                }
+                requestedSongs.add(mp3);
+                workState.note(nombre, "Buscando notas en el historico");
                 var ref = refs.get(nombre);
                 var variantes = ref == null ? List.<mx.salvador.wabot.media.LyricsHistoryService.Acordeorio>of()
                         : ref.acordeorios;
@@ -653,6 +689,12 @@ public class SongPipeline {
                 copiadas.forEach(c -> sb.append("\u2022 ").append(c).append('\n'));
             }
             if (!elecciones.isEmpty()) {
+                var previous = versionesPendientes.get(from);
+                if (previous != null && previous.expires().isAfter(java.time.Instant.now()) && previous.sunday().equals(domingo)) {
+                    var combined = new ArrayList<>(previous.choices());
+                    combined.addAll(elecciones);
+                    elecciones = combined;
+                }
                 versionesPendientes.put(from, new PendingNotes(List.copyOf(elecciones), estructura.notasId(),
                         domingo, java.time.Instant.now().plusSeconds(1800)));
                 persistNoteChoices();
@@ -666,6 +708,7 @@ public class SongPipeline {
                 if (chordDrafts != null && chordDrafts.available()) sb.append("Puedo buscar una version base si lo autorizas.\n");
                 else sb.append("La busqueda web no esta configurada; no generare notas sin fuentes.\n");
             }
+            if (sb.isEmpty() && omitted > 0) sb.append("No hay nuevas notas pendientes. Conservo las notas existentes y tus decisiones de hoy; si quieres cambiar alguna, dime la cancion.");
             whatsApp.replyText(from, sb.toString());
             if (chordDrafts != null && chordDrafts.available()) {
                 for (String song : sinNotas) createNoteDraft(from, song, "", estructura);
