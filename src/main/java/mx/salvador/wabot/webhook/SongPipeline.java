@@ -139,11 +139,11 @@ public class SongPipeline {
         } finally { draftsInProgress.remove(task); }
     }
 
-    private String draftDecision(String body, DraftChoice choice) {
-        String text = body.strip().toLowerCase(java.util.Locale.ROOT);
+    String draftDecision(String body, DraftChoice choice) {
+        String text = body.strip().toLowerCase(java.util.Locale.ROOT).replaceAll("[.!¡¿?]+$", "").strip().replaceAll("\\s+", " ");
         if (text.matches("no|no gracias|no buscar|omitir")) return "decline";
         if (!choice.authorized() && text.matches("si|sí|si busca|sí busca|buscar|busca|buscar en la web")) return "search";
-        if (choice.authorized() && text.matches("original|conservar original|conserva original|tono original")) return "original";
+        if (choice.authorized() && text.matches("(?:(?:conservar|conserva|en) )?(?:el )?(?:tono )?original")) return "original";
         if (choice.authorized()) return draftKeyReply(text);
         return null;
     }

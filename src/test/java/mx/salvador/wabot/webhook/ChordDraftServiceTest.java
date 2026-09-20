@@ -33,12 +33,14 @@ class ChordDraftServiceTest {
         var document = service.render("Tema cover (+2)", "https://youtu.be/example", service.parse(draft, sources), "D");
         try (var doc = new XWPFDocument(new ByteArrayInputStream(document.bytes()))) {
             String text = doc.getParagraphs().stream().map(p -> p.getText()).collect(java.util.stream.Collectors.joining("\n"));
-            assertTrue(text.contains("D | A | Bm | G"));
-            assertTrue(text.contains("cover NO estan verificadas"));
+            assertTrue(text.contains("D    A    Bm    G"));
+            assertTrue(text.contains("no verificado contra las fuentes ni el audio"));
             assertTrue(text.contains("https://fuente-a.example/song"));
-            assertTrue(text.contains("https://fuente-b.example/song"));
-            assertTrue(text.contains("Version solicitada"));
-            assertTrue(text.contains("Pendiente de comprobar"));
+            assertFalse(text.contains("https://fuente-b.example/song"));
+            assertEquals("TEMA COVER (+2)", doc.getParagraphs().get(0).getText());
+            assertTrue(doc.getParagraphs().get(0).getRuns().get(0).isBold());
+            assertEquals("Tahoma", doc.getParagraphs().get(0).getRuns().get(0).getFontFamily());
+            assertTrue(text.contains("CORO"));
         }
     }
 
@@ -108,9 +110,9 @@ class ChordDraftServiceTest {
         var document = service.render("Tema", "", parsed, "");
         try (var doc = new XWPFDocument(new ByteArrayInputStream(document.bytes()))) {
             String text = doc.getParagraphs().stream().map(p -> p.getText()).collect(java.util.stream.Collectors.joining("\n"));
-            assertTrue(text.contains("F | Bdim | C"));
-            assertTrue(text.contains("no se verificaron contra el texto de las fuentes ni contra el audio"));
-            assertTrue(text.contains("propuesta de IA"));
+            assertTrue(text.contains("F    Bdim    C"));
+            assertTrue(text.contains("no verificado contra las fuentes ni el audio"));
+            assertTrue(text.contains("Borrador de IA"));
         }
     }
 
@@ -144,6 +146,7 @@ class ChordDraftServiceTest {
             @Override public boolean available() { return true; }
             @Override String searchExchange(String body) throws Exception {
                 assertTrue(json.readTree(body).path("query").asText().contains("tonalidad D"));
+                assertTrue(json.readTree(body).path("query").asText().contains("acordes guitarra"));
                 return json.writeValueAsString(java.util.Map.of("results", List.of(java.util.Map.of(
                         "title", "Tema", "url", "https://fuente.example/song", "content", "C G"))));
             }
@@ -161,8 +164,49 @@ class ChordDraftServiceTest {
         var document = stub.create("Tema", "", "D");
         try (var doc = new XWPFDocument(new ByteArrayInputStream(document.bytes()))) {
             String text = doc.getParagraphs().stream().map(p -> p.getText()).collect(java.util.stream.Collectors.joining("\n"));
-            assertTrue(text.contains("D | A"));
-            assertFalse(text.contains("E | B"));
+            assertTrue(text.contains("D    A"));
+            assertFalse(text.contains("E    B"));
         }
+    }
+
+    @Test void chartPreservesLyricChordPairsAndTemplateStyling() throws Exception {
+        // Original fixture text, not lyrics fetched from a website.
+        String response = """
+                {"reference":"Tema de prueba","key":"D","sections":[
+                  {"name":"Intro","source":1,"lines":[{"chords":"D (2X)    A","lyrics":""}]},
+                  {"name":"Verso","source":1,"lines":[
+                    {"chords":"  D        A","lyrics":"  Texto de prueba"},
+                    {"chords":"","lyrics":"Segunda linea de ejemplo"}]},
+                  {"name":"Coro (2X)","source":1,"lines":[{"chords":"G     D","lyrics":"Otro ejemplo"}]}]}
+                """;
+        var parsed = service.parse(response, sources);
+        assertEquals("  D        A", parsed.sections().get(1).lines().get(0).chords());
+        var result = service.render("Tema de prueba", "", parsed, "");
+        try (var doc = new XWPFDocument(new ByteArrayInputStream(result.bytes()))) {
+            var paragraphs = doc.getParagraphs();
+            var texts = paragraphs.stream().map(p -> p.getText()).toList();
+            assertEquals("TEMA DE PRUEBA", texts.get(0));
+            assertEquals("Tahoma", paragraphs.get(0).getRuns().get(0).getFontFamily());
+            assertTrue(paragraphs.get(0).getRuns().get(0).isBold());
+            assertTrue(texts.contains("ESTROFA"));
+            assertTrue(texts.contains("CORO (2X)"));
+            int chord = texts.indexOf("  D        A");
+            assertEquals("  Texto de prueba", texts.get(chord + 1));
+            assertEquals("Segunda linea de ejemplo", texts.get(chord + 2));
+            assertEquals("Courier New", paragraphs.get(chord).getRuns().get(0).getFontFamily());
+            assertEquals("Courier New", paragraphs.get(chord + 1).getRuns().get(0).getFontFamily());
+            assertTrue(paragraphs.get(chord).isKeepNext());
+            assertEquals(1, texts.stream().filter(t -> t.startsWith("Fuente:")).count());
+            assertFalse(texts.stream().anyMatch(t -> t.contains("solo contiene acordes")));
+        }
+    }
+
+    @Test void instrumentalOnlyDraftExplainsMissingLyricsAndMalformedLinesFailClearly() throws Exception {
+        var result = service.render("Tema", "", service.parse(draft, sources), "");
+        try (var doc = new XWPFDocument(new ByteArrayInputStream(result.bytes()))) {
+            assertTrue(doc.getParagraphs().stream().anyMatch(p -> p.getText().contains("solo contiene acordes")));
+        }
+        String bad = "{\"reference\":\"Tema\",\"sections\":[{\"lines\":[{\"chords\":{}}]}]}";
+        assertThrows(IOException.class, () -> service.parse(bad, sources));
     }
 }

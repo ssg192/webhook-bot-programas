@@ -66,6 +66,17 @@ class SongPipelineDraftTest {
         assertNull(SongPipeline.draftKeyReply("baja esa cancion"));
     }
 
+    @Test void originalVariantsAreHandledLocallyOnlyAtTheKeyQuestion() {
+        pipeline.generarNotas("sender", null);
+        var permission = pipeline.pendingDraftChoice("sender");
+        assertNull(pipeline.draftDecision("el original", permission));
+        pipeline.chooseDraft("sender", permission, "search");
+        for (String text : List.of("original", "el original", "El tono original.", "en el original", "conserva el original"))
+            assertEquals("original", pipeline.draftDecision(text, pipeline.pendingDraftChoice("sender")));
+        assertNull(pipeline.draftDecision("no quiero el original", pipeline.pendingDraftChoice("sender")));
+        assertEquals(0, drafts.calls);
+    }
+
     @Test void staleApprovalCannotSearchOrCreateAndCancellationDiscardsChoice() {
         pipeline.generarNotas("sender", null);
         var permission = pipeline.pendingDraftChoice("sender");

@@ -68,13 +68,14 @@ Cuando falten notas, primero pregunta si se quiere buscar una versión base en i
 Responder `no` no hace búsquedas ni genera documentos. Tras aceptar (`si`), pregunta
 el tono (`original`, `en Re`, `F#m`, etc.) ANTES de buscar. La búsqueda y el pedido a
 la IA incluyen ese tono. Con el resultado crea directamente en Notas/
-un `BORRADOR - ... .docx` con progresiones, estructura disponible, la fuente y una lista
-de puntos por revisar. No se bloquea por fuentes distintas, nombres de secciones,
+un `BORRADOR - ... .docx` con letra/acordes intercalados, estructura disponible y fuente.
+No se bloquea por fuentes distintas, nombres de secciones,
 notación de acordes o coincidencia con el texto recuperado. Se acepta la propuesta de la IA como
 borrador; el DOCX advierte que los acordes no se verificaron contra las fuentes ni
 contra el audio. Solo se comprueba que la respuesta tenga contenido utilizable para
 el DOCX; se conservan los controles de cuota, permisos, cancelación y archivos existentes.
-No reproduce letras ni tablaturas. No escucha audio ni verifica
+El prompt pide conservar letra y acordes de una misma página con reproducción permitida,
+sin cruzar con el histórico ni completar letras ausentes. No incluye tablaturas. No escucha audio ni verifica
 el arreglo del cover: la referencia puede ser la original y siempre se indica que
 debe contrastarse contra el link. Los links de nuevas descargas se guardan como referencia;
 para canciones anteriores puede no disponer del link.
@@ -87,6 +88,18 @@ contenido de las páginas en el almacén de contexto. Varias canciones se pregun
 por una. No se busca hasta elegir tonalidad. Si ya existe el DOCX de destino,
 se conserva sin sobrescribir las ediciones ni consumir otra búsqueda.
 La notación y tonalidad propuestas por la IA se conservan como datos no verificados.
+La búsqueda prioriza acordes de guitarra. El DOCX sigue el estilo de ensayo del
+ejemplo aportado: título y secciones en Tahoma 11 mayúsculas/negritas, espaciado compacto,
+carta con márgenes de una pulgada y un único aviso de revisión al final. Los pares
+`lines: [{chords, lyrics}]` conservan espacios y orden, con acordes encima de la letra.
+Esos pares usan Courier New 10 para mantener las columnas al abrir en Word/Drive;
+el párrafo de acordes se mantiene junto a la línea cantada. Las intros pueden llevar
+solo acordes. El esquema anterior `chords: [...]` sigue funcionando, pero se avisa
+cuando no hay letra utilizable. No se promete una hoja completa si la fuente llega incompleta.
+Solo muestra enlaces de las fuentes citadas por las secciones. No agrega
+reharmonizaciones de piano ni repeticiones inventadas. Los archivos existentes no se reemplazan.
+`el original`, `el tono original` y variantes simples se resuelven localmente en la
+pregunta de tono, sin requerir otra llamada a Gemini.
 Las fuentes pueden discrepar o estar equivocadas: sigue siendo un borrador, no una partitura validada.
 
 ## Referencias oficiales consultadas (19 de septiembre de 2026)
