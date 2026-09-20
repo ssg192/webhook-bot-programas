@@ -97,4 +97,28 @@ class ChordDraftServiceTest {
         var failure = assertThrows(IOException.class, () -> service.reserveSearch());
         assertTrue(failure.getMessage().contains("proximo mes"));
     }
+
+    @Test void acceptsExtraFieldsAndMarkdownWithoutLosingEvidenceChecks() throws Exception {
+        String extended = draft.replace("\"reference\":", "\"explanation\":\"extra\",\"reference\":")
+                .replace("\"name\":", "\"comment\":\"extra\",\"name\":");
+        assertEquals(service.parse(draft, sources), service.parse("```json\n" + extended + "```", sources));
+        assertThrows(IOException.class, () -> service.parse(extended.replace("\"Am\"", "\"Bdim\""), sources));
+    }
+
+    @Test void optionalMetadataCanBeAbsentWithoutInventingKeyOrSources() throws Exception {
+        String minimal = draft.replace("\"key\":\"C\",\"keySource\":1,\"corroboration\":2,", "");
+        assertEquals("", service.parse(minimal, sources).key());
+        assertEquals(1, service.parse(minimal, sources).sections().size());
+        assertEquals("", service.parse(draft.replace("\"keySource\":1,", ""), sources).key());
+        assertEquals("", service.parse(minimal.replace("\"sections\":", "\"key\":null,\"keySource\":null,\"corroboration\":null,\"sections\":"), sources).key());
+        assertThrows(IOException.class, () -> service.parse(minimal.replace(",\"source\":1", ""), sources));
+    }
+
+    @Test void malformedResponsesHaveActionableErrorsAndRejectTrailingData() {
+        var malformed = assertThrows(IOException.class, () -> service.parse("{broken", sources));
+        assertTrue(malformed.getMessage().contains("respuesta ilegible"));
+        assertThrows(IOException.class, () -> service.parse(draft + " {}", sources));
+        assertThrows(IOException.class, () -> service.parse("[]", sources));
+        assertThrows(IOException.class, () -> service.parse(draft.replace("\"corroboration\":2", "\"corroboration\":\"2\""), sources));
+    }
 }

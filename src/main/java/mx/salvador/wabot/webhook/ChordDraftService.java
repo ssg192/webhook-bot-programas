@@ -138,16 +138,27 @@ public class ChordDraftService {
     }
 
     Draft parse(String text, List<Source> sources) throws IOException {
-        var value = json.readTree(text);
-        if (value == null || !value.isObject() || value.size() != 5) throw new IOException("Borrador no valido");
-        String reference = value.path("reference").asText(), key = value.path("key").asText();
+        String payload = text == null ? "" : text.strip();
+        // Accept presentation differences, never guess missing musical evidence.
+        if (payload.startsWith("```"))
+            payload = payload.replaceFirst("^```(?:json)?\\s*", "").replaceFirst("\\s*```$", "").strip();
+        com.fasterxml.jackson.databind.JsonNode value;
+        try {
+            value = json.reader().with(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(payload);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new IOException("La IA devolvio una respuesta ilegible; no pude verificar los acordes ni crear el documento", e);
+        }
+        if (value == null || !value.isObject()) throw new IOException("La IA no devolvio los datos de la base en el formato esperado; no cree el documento");
+        if (!value.path("reference").isTextual()) throw new IOException("La respuesta no identifica la cancion de referencia; no cree el documento");
+        if (value.hasNonNull("key") && !value.path("key").isTextual()) throw new IOException("Tonalidad en formato no valido");
+        String reference = value.path("reference").asText(), key = value.path("key").asText("");
         if (reference.isBlank() || reference.length() > 160 || reference.contains("\n") || (!key.isEmpty() && !ChordTransposer.validKey(key)))
             throw new IOException("Referencia o tono sin validar");
         var sections = value.path("sections");
         if (!sections.isArray() || sections.isEmpty() || sections.size() > 8) throw new IOException("No encontre progresiones suficientes para una base util; no cree un documento vacio");
         var parsed = new ArrayList<Section>();
         for (var section : sections) {
-            if (section.size() != 3 || !SECTIONS.contains(section.path("name").asText())) throw new IOException("Seccion sin validar");
+            if (!section.isObject() || !SECTIONS.contains(section.path("name").asText())) throw new IOException("Seccion sin validar");
             int source = index(section.path("source"), sources.size());
             var chords = section.path("chords");
             if (!chords.isArray() || chords.size() < 2 || chords.size() > 12) throw new IOException("Progresion sin validar");
@@ -166,17 +177,18 @@ public class ChordDraftService {
         }
         int first = parsed.get(0).source();
         if (parsed.stream().anyMatch(section -> section.source() != first)) throw new IOException("No mezclare progresiones de arreglos diferentes");
-        if (!value.path("corroboration").isIntegralNumber()) throw new IOException("Fuente secundaria invalida");
-        if (value.path("corroboration").intValue() != 0) {
+        if (value.hasNonNull("corroboration") && !value.path("corroboration").isIntegralNumber()) throw new IOException("Fuente secundaria invalida");
+        if (value.hasNonNull("corroboration") && value.path("corroboration").intValue() != 0) {
             int second = index(value.path("corroboration"), sources.size());
             if (host(sources.get(first - 1).url()).equals(host(sources.get(second - 1).url()))) throw new IOException("Fuente secundaria no independiente");
         }
+        if (!value.hasNonNull("keySource")) key = ""; // No source means unknown key, not invented evidence.
         if (!key.isEmpty()) {
             int source = index(value.path("keySource"), sources.size());
             if (source != first) throw new IOException("La tonalidad debe proceder de la misma version que los acordes");
             if (!Pattern.compile("(?i)(?:key|tonalidad|tono)\\s*[:=]?\\s*" + Pattern.quote(key) + "(?![A-Za-z#b])")
                     .matcher(sources.get(source - 1).content()).find()) key = ""; // Permitir conservar los acordes sin inventar un tono.
-        } else if (value.path("keySource").asInt(-1) != 0) throw new IOException("Fuente tonal inconsistente");
+        } else if (value.hasNonNull("keySource") && (!value.path("keySource").isIntegralNumber() || value.path("keySource").intValue() != 0)) throw new IOException("Fuente tonal inconsistente");
         return new Draft(reference, key, List.copyOf(parsed), sources);
     }
 
