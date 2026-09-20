@@ -43,15 +43,13 @@ class ChordDraftServiceTest {
     }
 
     @Test void refusesEmptyOrMalformedDrafts() {
-        assertThrows(IOException.class, () -> service.parse(draft.replace("\"Am\"", "\"esto no es un acorde\""), sources));
-        assertThrows(IOException.class, () -> service.parse(draft.replace("\"name\":\"Coro\"", "\"name\":\"Letra completa\""), sources));
-        assertThrows(IOException.class, () -> service.parse(draft.replace("\"corroboration\":2", "\"corroboration\":1"), sources));
+        assertThrows(IOException.class, () -> service.parse(draft.replace("\"Am\"", "{}"), sources));
         assertThrows(IOException.class, () -> service.parse("{}", sources));
     }
 
     @Test void unconfirmedKeyStillAllowsOriginalCopy() throws Exception {
         var parsed = service.parse(draft.replace("\"key\":\"C\"", "\"key\":\"D\""), sources);
-        assertEquals("", parsed.key());
+        assertEquals("D", parsed.key());
         assertFalse(service.render("Tema", "", parsed, "").transposed());
     }
 
@@ -98,11 +96,11 @@ class ChordDraftServiceTest {
         assertTrue(failure.getMessage().contains("proximo mes"));
     }
 
-    @Test void acceptsExtraFieldsAndMarkdownWithoutLosingSymbolChecks() throws Exception {
+    @Test void acceptsExtraFieldsAndMarkdownWithoutLosingFormatChecks() throws Exception {
         String extended = draft.replace("\"reference\":", "\"explanation\":\"extra\",\"reference\":")
                 .replace("\"name\":", "\"comment\":\"extra\",\"name\":");
         assertEquals(service.parse(draft, sources), service.parse("```json\n" + extended + "```", sources));
-        assertThrows(IOException.class, () -> service.parse(extended.replace("\"Am\"", "\"invalido\""), sources));
+        assertThrows(IOException.class, () -> service.parse(extended.replace("\"Am\"", "{}"), sources));
     }
 
     @Test void createsReviewableDocEvenWhenAiChordsDoNotMatchSourceText() throws Exception {
@@ -120,9 +118,9 @@ class ChordDraftServiceTest {
         String minimal = draft.replace("\"key\":\"C\",\"keySource\":1,\"corroboration\":2,", "");
         assertEquals("", service.parse(minimal, sources).key());
         assertEquals(1, service.parse(minimal, sources).sections().size());
-        assertEquals("", service.parse(draft.replace("\"keySource\":1,", ""), sources).key());
+        assertEquals("C", service.parse(draft.replace("\"keySource\":1,", ""), sources).key());
         assertEquals("", service.parse(minimal.replace("\"sections\":", "\"key\":null,\"keySource\":null,\"corroboration\":null,\"sections\":"), sources).key());
-        assertThrows(IOException.class, () -> service.parse(minimal.replace(",\"source\":1", ""), sources));
+        assertEquals(0, service.parse(minimal.replace(",\"source\":1", ""), sources).sections().get(0).source());
     }
 
     @Test void malformedResponsesHaveActionableErrorsAndRejectTrailingData() {
@@ -130,6 +128,41 @@ class ChordDraftServiceTest {
         assertTrue(malformed.getMessage().contains("respuesta ilegible"));
         assertThrows(IOException.class, () -> service.parse(draft + " {}", sources));
         assertThrows(IOException.class, () -> service.parse("[]", sources));
-        assertThrows(IOException.class, () -> service.parse(draft.replace("\"corroboration\":2", "\"corroboration\":\"2\""), sources));
+    }
+
+    @Test void differentSourcesAndUnusualNotationDoNotBlockDocument() throws Exception {
+        String mixed = draft.replace("\"corroboration\":2", "\"corroboration\":\"optional\"")
+                .replace("\"C\",\"G\",\"Am\",\"F\"", "\"C(add9)/G (x2)\"")
+                .replace("\"source\":1}]", "\"source\":1},{\"name\":\"Interludio libre\",\"chords\":[\"Re sus\"],\"source\":2}]");
+        var parsed = service.parse(mixed, sources);
+        assertEquals(2, parsed.sections().size());
+        assertNotNull(service.render("Tema", "", parsed, "").bytes());
+    }
+
+    @Test void searchAndAiReceiveChosenKeyAndDocCopiesResultWithoutTransposingAgain() throws Exception {
+        var stub = new ChordDraftService() {
+            @Override public boolean available() { return true; }
+            @Override String searchExchange(String body) throws Exception {
+                assertTrue(json.readTree(body).path("query").asText().contains("tonalidad D"));
+                return json.writeValueAsString(java.util.Map.of("results", List.of(java.util.Map.of(
+                        "title", "Tema", "url", "https://fuente.example/song", "content", "C G"))));
+            }
+        };
+        stub.json = service.json;
+        stub.gemini = new GeminiSongInterpreter() {
+            @Override String exchange(String body) throws Exception {
+                var input = service.json.readTree(service.json.readTree(body).path("contents").get(0).path("parts").get(0).path("text").asText());
+                assertEquals("D", input.path("tonoSolicitado").asText());
+                String result = "{\"reference\":\"Tema\",\"key\":\"D\",\"sections\":[{\"name\":\"Base\",\"chords\":[\"D\",\"A\"],\"source\":1}]}";
+                return service.json.writeValueAsString(java.util.Map.of("candidates", List.of(java.util.Map.of(
+                        "finishReason", "STOP", "content", java.util.Map.of("parts", List.of(java.util.Map.of("text", result)))))));
+            }
+        };
+        var document = stub.create("Tema", "", "D");
+        try (var doc = new XWPFDocument(new ByteArrayInputStream(document.bytes()))) {
+            String text = doc.getParagraphs().stream().map(p -> p.getText()).collect(java.util.stream.Collectors.joining("\n"));
+            assertTrue(text.contains("D | A"));
+            assertFalse(text.contains("E | B"));
+        }
     }
 }

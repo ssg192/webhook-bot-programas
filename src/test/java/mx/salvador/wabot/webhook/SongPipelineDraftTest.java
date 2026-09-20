@@ -32,10 +32,11 @@ class SongPipelineDraftTest {
         assertEquals(0, drafts.calls);
         assertEquals(0, drive.uploads);
         pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "search");
-        assertEquals(1, drafts.calls);
-        assertEquals("https://youtu.be/exact-version", drafts.versionUrl);
+        assertEquals(0, drafts.calls);
         assertEquals(0, drive.uploads);
         pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "original");
+        assertEquals(1, drafts.calls);
+        assertEquals("https://youtu.be/exact-version", drafts.versionUrl);
         assertEquals("notes", drive.destination);
         assertTrue(drive.name.startsWith("BORRADOR - Tema"));
         assertEquals("draft-id", pipeline.workState.copies("Tema").get(0).id());
@@ -50,11 +51,11 @@ class SongPipelineDraftTest {
         assertNull(pipeline.pendingDraftChoice("sender"));
     }
 
-    @Test void decliningAfterResearchStillDoesNotCreateDocument() {
+    @Test void decliningAtKeyQuestionDoesNotSearchOrCreateDocument() {
         pipeline.generarNotas("sender", null);
         pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "search");
         pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "decline");
-        assertEquals(1, drafts.calls);
+        assertEquals(0, drafts.calls);
         assertEquals(0, drive.uploads);
     }
 
@@ -81,11 +82,12 @@ class SongPipelineDraftTest {
         assertEquals(0, drive.uploads);
     }
 
-    @Test void changingKeyUsesTheSameResearchAndDoesNotTouchAudio() {
+    @Test void chosenKeyIsIncludedInResearchAndDoesNotTouchAudio() {
         pipeline.generarNotas("sender", null);
         pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "search");
         pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "D");
         assertEquals(1, drafts.calls);
+        assertEquals("D", drafts.targetKey);
         assertEquals(1, drive.uploads);
         assertTrue(drive.name.endsWith(" - D.docx"));
         assertEquals("notes", drive.destination);
@@ -106,7 +108,7 @@ class SongPipelineDraftTest {
         pipeline.createNoteDraft("sender", "Tema", "D", drive.ensureSundayStructure(LocalDate.now()));
         pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "search");
         pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "D");
-        assertEquals(1, drafts.calls);
+        assertEquals(0, drafts.calls);
         assertEquals(0, drive.uploads);
         assertTrue(messages.stream().anyMatch(text -> text.contains("Conserve el DOCX")));
     }
@@ -115,15 +117,16 @@ class SongPipelineDraftTest {
         drafts.fail = true;
         pipeline.generarNotas("sender", null);
         pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "search");
+        pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "original");
         assertEquals(0, drive.uploads);
         assertTrue(messages.stream().anyMatch(text -> text.contains("No cree ningun documento")));
     }
 
     private static class FakeDraft extends ChordDraftService {
-        int calls; boolean fail; String versionUrl;
+        int calls; boolean fail; String versionUrl, targetKey;
         @Override public boolean available() { return true; }
-        @Override Draft research(String song, String url) throws Exception {
-            calls++; versionUrl = url;
+        @Override Draft research(String song, String url, String target) throws Exception {
+            calls++; versionUrl = url; targetKey = target;
             if (fail) throw new java.io.IOException("Cuota agotada");
             return new Draft("Tema - Original", "C", List.of(new Section("Coro", List.of("C", "G"), 1)),
                     List.of(new Source("Tema", "https://fuente.example/song", "Key: C. C G")));

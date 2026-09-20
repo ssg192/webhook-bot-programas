@@ -49,7 +49,7 @@ public class SongPipeline {
     @Inject ChordDraftService chordDrafts;
     private final Set<String> draftsInProgress = ConcurrentHashMap.newKeySet();
     record DraftChoice(String song, String targetKey, DriveService.EstructuraDomingo folder,
-                       java.time.LocalDate sunday, java.time.Instant expires, ChordDraftService.Draft draft) {}
+                       java.time.LocalDate sunday, java.time.Instant expires, boolean authorized) {}
     private final Map<String, List<DraftChoice>> draftChoices = new ConcurrentHashMap<>();
 
     DraftChoice pendingDraftChoice(String from) {
@@ -75,12 +75,11 @@ public class SongPipeline {
     }
 
     private void askDraftChoice(String from, DraftChoice choice) {
-        if (choice.draft() == null) {
+        if (!choice.authorized()) {
             whatsApp.replyText(from, "No encontre notas de " + choice.song() + ". ¿Quieres buscar en internet una version base? Responde si o no.");
         } else {
-            String tone = choice.draft().key().isEmpty() ? "La pagina no indica una tonalidad fiable." : "Tonalidad encontrada: " + choice.draft().key() + ".";
-            whatsApp.replyText(from, "Encontre: " + choice.draft().reference() + ". " + tone
-                    + "\n¿Conservo los acordes originales o los quieres en otro tono? Escribe original o, por ejemplo, en Re. Para salir, cancelar.");
+            whatsApp.replyText(from, "¿En que tono busco la base de " + choice.song()
+                    + "? Escribe original o, por ejemplo, en Re. Para salir, cancelar.");
         }
     }
 
@@ -98,40 +97,42 @@ public class SongPipeline {
             whatsApp.replyText(from, "De acuerdo, no creare notas de " + expected.song() + ".");
             nextDraftChoice(from, expected); return;
         }
-        if (expected.draft() == null && !decision.equals("search")) { askDraftChoice(from, expected); return; }
+        if (!expected.authorized()) {
+            if (!decision.equals("search")) { askDraftChoice(from, expected); return; }
+            var ready = new DraftChoice(expected.song(), expected.targetKey(), expected.folder(), expected.sunday(), expected.expires(), true);
+            if (replaceDraftChoice(from, expected, ready)) {
+                workState.note(expected.song(), "Esperando tonalidad antes de buscar en internet");
+                askDraftChoice(from, ready);
+            }
+            return;
+        }
         String task = from + ":" + expected.song();
         if (!draftsInProgress.add(task)) { whatsApp.replyText(from, "Sigo procesando esa peticion; te aviso al terminar."); return; }
         try {
-            if (expected.draft() == null) {
-                workState.note(expected.song(), "Buscando los acordes de la version original en internet");
-                whatsApp.replyText(from, "Buscando los acordes de la version original de " + expected.song() + "...");
-                var found = chordDrafts.research(expected.song(), workState.reference(expected.song()));
-                var ready = new DraftChoice(expected.song(), expected.targetKey(), expected.folder(), expected.sunday(), expected.expires(), found);
-                if (replaceDraftChoice(from, expected, ready)) {
-                    workState.note(expected.song(), "Acordes encontrados; esperando elegir tonalidad para el DOCX");
-                    askDraftChoice(from, ready);
-                }
-            } else {
+            {
                 String target = decision.equals("original") ? "" : decision;
                 if (!target.isEmpty() && !mx.salvador.wabot.media.ChordTransposer.validKey(target)) { askDraftChoice(from, expected); return; }
                 String name = "BORRADOR - " + expected.song().replaceAll("[\\\\/:*?\"<>|]", " ")
                         + (target.isEmpty() ? " - base web" : " - " + target) + ".docx";
                 var existing = driveService.findFile(name, expected.folder().notasId());
+                workState.note(expected.song(), "Buscando base web y preparando DOCX");
+                if (existing == null) whatsApp.replyText(from, "Buscando acordes de " + expected.song()
+                        + (target.isEmpty() ? " en tono original" : " en " + target) + " y preparando el DOCX, te aviso...");
                 ChordDraftService.Document doc = existing == null
-                        ? chordDrafts.render(expected.song(), workState.reference(expected.song()), expected.draft(), target) : null;
+                        ? chordDrafts.create(expected.song(), workState.reference(expected.song()), target) : null;
                 if (pendingDraftChoice(from) != expected) return;
                 var uploaded = existing != null ? existing : driveService.uploadBytes(name, doc.bytes(), DriveService.DOCX_MIME, expected.folder().notasId());
                 workState.copied(expected.song(), uploaded.getId(), name, expected.folder().notasId());
                 workState.note(expected.song(), "DOCX de acordes disponible; revisar antes de usar");
-                whatsApp.replyText(from, (existing != null ? "Conserve el DOCX existente y tus ediciones." : "Notas encontradas en internet. Revisa el DOCX antes de usarlo.") + "\n" + uploaded.getWebViewLink());
+                whatsApp.replyText(from, (existing != null ? "Conserve el DOCX existente y tus ediciones." : "Borrador de notas creado. Revisa los acordes y la tonalidad del DOCX antes de usarlo.") + "\n" + uploaded.getWebViewLink());
                 nextDraftChoice(from, expected);
             }
         } catch (Exception e) {
             if (pendingDraftChoice(from) != expected) return;
             String reason = e instanceof GeminiSongInterpreter.Failure failure ? failure.userMessage()
                     : e instanceof java.io.IOException || e instanceof IllegalArgumentException ? e.getMessage() : "No pude completar la operacion";
-            whatsApp.replyText(from, reason + (expected.draft() == null ? ". No cree ningun documento." : ". Puedes elegir original para conservarlos sin transponer, o cancelar."));
-            if (expected.draft() == null) {
+            whatsApp.replyText(from, reason + ". No cree ningun documento.");
+            {
                 workState.note(expected.song(), "No se completo la busqueda web; no se creo documento");
                 nextDraftChoice(from, expected);
             }
@@ -141,9 +142,9 @@ public class SongPipeline {
     private String draftDecision(String body, DraftChoice choice) {
         String text = body.strip().toLowerCase(java.util.Locale.ROOT);
         if (text.matches("no|no gracias|no buscar|omitir")) return "decline";
-        if (choice.draft() == null && text.matches("si|sí|si busca|sí busca|buscar|busca|buscar en la web")) return "search";
-        if (choice.draft() != null && text.matches("original|conservar original|conserva original|tono original")) return "original";
-        if (choice.draft() != null) return draftKeyReply(text);
+        if (!choice.authorized() && text.matches("si|sí|si busca|sí busca|buscar|busca|buscar en la web")) return "search";
+        if (choice.authorized() && text.matches("original|conservar original|conserva original|tono original")) return "original";
+        if (choice.authorized()) return draftKeyReply(text);
         return null;
     }
 
@@ -188,8 +189,8 @@ public class SongPipeline {
             state.put("conversacion", whatsApp == null ? List.of() : whatsApp.conversation(from));
             var draftChoice = pendingDraftChoice(from);
             if (draftChoice != null) state.put("preguntaBaseWeb", Map.of("cancion", draftChoice.song(),
-                    "etapa", draftChoice.draft() == null ? "permiso_busqueda" : "elegir_tono",
-                    "tonoFuente", draftChoice.draft() == null ? "" : draftChoice.draft().key()));
+                    "etapa", !draftChoice.authorized() ? "permiso_busqueda" : "elegir_tono",
+                    "tonoSolicitado", draftChoice.targetKey()));
             pendingNoteChoice(from); // Descarta menus vencidos antes de formar el contexto.
             var pending = versionesPendientes.get(from);
             state.put("preguntasNotasPendientes", pending == null ? List.of() : pending.choices().stream()
@@ -695,7 +696,7 @@ public class SongPipeline {
         }
         String title = MusicWorkState.key(song);
         pendingDraftChoice(from);
-        var choice = new DraftChoice(title, targetKey, folder, Fechas.proximoDomingo(), java.time.Instant.now().plusSeconds(1800), null);
+        var choice = new DraftChoice(title, targetKey, folder, Fechas.proximoDomingo(), java.time.Instant.now().plusSeconds(1800), false);
         draftChoices.compute(from, (key, list) -> {
             var queue = new ArrayList<>(list == null ? List.<DraftChoice>of() : list);
             if (queue.stream().noneMatch(item -> item.song().equals(title)) && queue.size() < 20) queue.add(choice);

@@ -120,8 +120,8 @@ public class GeminiSongInterpreter {
                 Si estadoTrabajo.preguntaBaseWeb existe, hay una pregunta de notas WEB, no de tono del audio.
                 intent=draft_reply, song=0, semitones=0, targetKey=search si acepta buscar en etapa permiso_busqueda,
                 decline si rechaza; en etapa elegir_tono, targetKey=original si quiere conservar los acordes
-                encontrados ('dejalo igual', 'el original') o la tonalidad inglesa como D para 'en Re'.
-                'cambialas a Re' en este contexto transpone el DOCX, NO cambia el audio.
+                originales ('dejalo igual', 'el original') o la tonalidad inglesa como D para 'en Re'.
+                El tono se elige ANTES de buscar. 'cambialas a Re' solicita una base web en Re, NO cambia el audio.
                 No uses draft_reply sin preguntaBaseWeb. Una consulta de estado sigue siendo status.
                 intent=draft_notes para pedir una BASE WEB de acordes, investigar notas o crear un borrador
                 en una tonalidad: 'armame una base de notas de esa en Re', 'investiga los acordes de Ingrid'.

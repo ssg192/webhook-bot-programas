@@ -52,21 +52,25 @@ public class ChordDraftService {
     record Section(String name, List<String> chords, int source) {}
     record Draft(String reference, String key, List<Section> sections, List<Source> sources) {}
     public record Document(byte[] bytes, String key, boolean transposed) {}
-    private static final List<String> SECTIONS = List.of("Intro", "Verso", "Pre-coro", "Coro", "Puente", "Instrumental", "Final", "Base armonica");
 
     public boolean available() { return enabled && apiKey.filter(key -> !key.isBlank()).isPresent() && gemini != null && gemini.available(); }
 
     public Document create(String song, String versionUrl, String targetKey) throws Exception {
-        return render(song, versionUrl, research(song, versionUrl), targetKey);
+        // The model prepares the requested key; do not transpose or musically gate its draft.
+        return render(song, versionUrl, research(song, versionUrl, targetKey), "");
     }
 
     Draft research(String song, String versionUrl) throws Exception {
+        return research(song, versionUrl, "");
+    }
+
+    Draft research(String song, String versionUrl, String targetKey) throws Exception {
         if (!available()) throw new IOException("La busqueda web de notas no esta configurada");
         if (song.isBlank() || song.length() > 350)
             throw new IOException("Cancion o tonalidad fuera de limites");
-        List<Source> sources = search(song);
+        List<Source> sources = search(song + (targetKey.isEmpty() ? " tono original" : " tonalidad " + targetKey));
         if (sources.isEmpty()) throw new IOException("No encontre una pagina con acordes utiles; no genere un documento vacio");
-        String input = json.writeValueAsString(Map.of("cancionSolicitada", song, "linkVersionSolicitada", versionUrl, "fuentes", sources));
+        String input = json.writeValueAsString(Map.of("cancionSolicitada", song, "linkVersionSolicitada", versionUrl, "tonoSolicitado", targetKey.isEmpty() ? "original" : targetKey, "fuentes", sources));
         String instructions = """
                 Busca la VERSION ORIGINAL de la cancion y extrae sus acordes y estructura de una pagina.
                 El link del usuario puede ser un cover: no intentes adaptar sus progresiones ni su tono.
@@ -81,14 +85,14 @@ public class ChordDraftService {
                 key (C, Db, Dm, etc., o vacio si no se indica explicitamente), keySource (indice 1-based,
                 0 si key vacio), sections (maximo 8 objetos {name,chords,source}). name solo puede ser
                 Intro, Verso, Pre-coro, Coro, Puente, Instrumental, Final o Base armonica.
-                chords es una lista de 2 a 12 simbolos de acordes EXACTAMENTE como aparecen
-                en la fuente source (indice 1-based); preserva orden, calidades y bajos. No transpongas.
+                chords es una lista de simbolos de acordes; source es el indice 1-based de referencia.
+                Busca una base en tonoSolicitado; si solo encuentras otra tonalidad, adapta los acordes
+                al tono solicitado. Si pide original, conserva el tono encontrado. key indica el tono
+                de los acordes entregados, no el de partida. El servidor los copiara tal como los entregues.
                 Conserva notacion latina, sostenidos/bemoles Unicode, inversiones y extensiones.
-                No cambies los simbolos para normalizarlos: el servidor lo hara solo si se pide transponer.
                 Si no hay estructura documentada usa Base armonica. Una sola progresion util es suficiente.
                 No mezcles acordes de referencias con claves/capo distintos. Usa solamente fuentes que
-                aporten evidencia. Todas las secciones y keySource deben usar la MISMA fuente primaria;
-                las otras fuentes solo corroboran identidad y no aportan progresiones incompatibles.
+                aporten informacion util. Puedes consultar varias paginas para preparar la base.
                 Una pagina coincidente con acordes es suficiente. corroboration es indice de una segunda
                 fuente independiente si existe, o 0 si solo hay una pagina util. No inventes otra fuente.
                 Si no hay evidencia suficiente, devuelve sections=[] y key vacio, no inventes una plantilla.
@@ -139,7 +143,7 @@ public class ChordDraftService {
 
     Draft parse(String text, List<Source> sources) throws IOException {
         String payload = text == null ? "" : text.strip();
-        // Accept presentation differences, never guess missing musical evidence.
+        // Only validate usable document data; musical review belongs to the user.
         if (payload.startsWith("```"))
             payload = payload.replaceFirst("^```(?:json)?\\s*", "").replaceFirst("\\s*```$", "").strip();
         com.fasterxml.jackson.databind.JsonNode value;
@@ -152,46 +156,27 @@ public class ChordDraftService {
         if (!value.path("reference").isTextual()) throw new IOException("La respuesta no identifica la cancion de referencia; no cree el documento");
         if (value.hasNonNull("key") && !value.path("key").isTextual()) throw new IOException("Tonalidad en formato no valido");
         String reference = value.path("reference").asText(), key = value.path("key").asText("");
-        if (reference.isBlank() || reference.length() > 160 || reference.contains("\n") || (!key.isEmpty() && !ChordTransposer.validKey(key)))
-            throw new IOException("Referencia o tono sin validar");
+        if (reference.isBlank()) throw new IOException("La respuesta no identifica la referencia");
         var sections = value.path("sections");
-        if (!sections.isArray() || sections.isEmpty() || sections.size() > 8) throw new IOException("No encontre progresiones suficientes para una base util; no cree un documento vacio");
+        if (!sections.isArray() || sections.isEmpty()) throw new IOException("La busqueda no devolvio acordes para crear el documento");
         var parsed = new ArrayList<Section>();
         for (var section : sections) {
-            if (!section.isObject() || !SECTIONS.contains(section.path("name").asText())) throw new IOException("Seccion sin validar");
-            int source = index(section.path("source"), sources.size());
+            if (!section.isObject()) throw new IOException("La respuesta contiene una seccion ilegible");
+            int source = section.path("source").asInt(0);
+            if (source < 1 || source > sources.size()) source = 0;
             var chords = section.path("chords");
-            if (!chords.isArray() || chords.size() < 2 || chords.size() > 12) throw new IOException("Progresion sin validar");
+            if (!chords.isArray() || chords.isEmpty()) throw new IOException("La respuesta contiene una seccion sin acordes");
             var symbols = new ArrayList<String>();
             for (var chord : chords) {
                 String symbol = chord.asText();
-                if (!ChordTransposer.copyableChord(symbol)) throw new IOException("El simbolo «" + symbol.substring(0, Math.min(32, symbol.length())) + "» no parece un acorde; necesito revisar la fuente");
+                if (!chord.isTextual() || symbol.isBlank()) throw new IOException("La respuesta contiene acordes en un formato ilegible");
                 symbols.add(symbol);
             }
-            parsed.add(new Section(section.path("name").asText(), List.copyOf(symbols), source));
+            parsed.add(new Section(section.path("name").asText("Base"), List.copyOf(symbols), source));
         }
-        int first = parsed.get(0).source();
-        if (parsed.stream().anyMatch(section -> section.source() != first)) throw new IOException("No mezclare progresiones de arreglos diferentes");
-        if (value.hasNonNull("corroboration") && !value.path("corroboration").isIntegralNumber()) throw new IOException("Fuente secundaria invalida");
-        if (value.hasNonNull("corroboration") && value.path("corroboration").intValue() != 0) {
-            int second = index(value.path("corroboration"), sources.size());
-            if (host(sources.get(first - 1).url()).equals(host(sources.get(second - 1).url()))) throw new IOException("Fuente secundaria no independiente");
-        }
-        if (!value.hasNonNull("keySource")) key = ""; // No source means unknown key, not invented evidence.
-        if (!key.isEmpty()) {
-            int source = index(value.path("keySource"), sources.size());
-            if (source != first) throw new IOException("La tonalidad debe proceder de la misma version que los acordes");
-            if (!Pattern.compile("(?i)(?:key|tonalidad|tono)\\s*[:=]?\\s*" + Pattern.quote(key) + "(?![A-Za-z#b])")
-                    .matcher(sources.get(source - 1).content()).find()) key = ""; // Permitir conservar los acordes sin inventar un tono.
-        } else if (value.hasNonNull("keySource") && (!value.path("keySource").isIntegralNumber() || value.path("keySource").intValue() != 0)) throw new IOException("Fuente tonal inconsistente");
         return new Draft(reference, key, List.copyOf(parsed), sources);
     }
 
-    private static int index(com.fasterxml.jackson.databind.JsonNode node, int size) throws IOException {
-        if (!node.isIntegralNumber() || !node.canConvertToInt() || node.intValue() < 1 || node.intValue() > size) throw new IOException("Fuente no valida");
-        return node.intValue();
-    }
-    private static String host(String url) { return URI.create(url).getHost().replaceFirst("^www\\.", "").toLowerCase(Locale.ROOT); }
     static boolean safeUrl(String url) {
         try { var uri = URI.create(url); return ("https".equals(uri.getScheme()) || "http".equals(uri.getScheme())) && uri.getHost() != null && uri.getUserInfo() == null; }
         catch (IllegalArgumentException e) { return false; }
@@ -210,11 +195,11 @@ public class ChordDraftService {
             line(doc, "Borrador preparado por IA a partir de una busqueda en internet. Los acordes no se verificaron contra el texto de las fuentes ni contra el audio. Revisa el DOCX antes de usarlo.");
             if (safeUrl(versionUrl)) line(doc, "Version solicitada: " + versionUrl);
             line(doc, "Referencia encontrada: " + draft.reference());
-            line(doc, "Tonalidad de referencia: " + (draft.key().isEmpty() ? "No determinada" : draft.key()));
+            line(doc, "Tonalidad indicada por la IA (revisar): " + (draft.key().isEmpty() ? "No determinada" : draft.key()));
             line(doc, "Tonalidad de esta base: " + (finalKey.isEmpty() ? "Sin determinar; acordes propuestos por la IA sin transponer" : finalKey));
             line(doc, "La tonalidad y progresiones del cover NO estan verificadas. No se infieren del titulo ni del sufijo de semitonos del audio.");
             for (var section : draft.sections()) {
-                line(doc, section.name() + " — propuesta de IA; referencia indicada [" + section.source() + "]; revisar acordes y estructura");
+                line(doc, section.name() + " — propuesta de IA; " + (section.source() > 0 ? "referencia indicada [" + section.source() + "]" : "sin referencia especifica") + "; revisar acordes y estructura");
                 line(doc, String.join(" | ", section.chords().stream().map(chord -> transpose
                         ? ChordTransposer.transpose(chord, delta, finalKey.contains("b")) : chord).toList()));
             }

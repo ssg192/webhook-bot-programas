@@ -65,33 +65,28 @@ automáticas. Los límites 432/433 del proveedor pausan hasta el mes siguiente, 
 pausa 15 minutos. Al agotarse la cuota se avisa y no se sube un documento vacío.
 
 Cuando falten notas, primero pregunta si se quiere buscar una versión base en internet.
-Responder `no` no hace búsquedas ni genera documentos. Tras aceptar (`si`), busca la
-versión original y muestra la referencia y tonalidad encontrada; pregunta si conservar
-los acordes (`original`) o transponer (`en Re`, `F#m`, etc.). Solo entonces crea en Notas/
+Responder `no` no hace búsquedas ni genera documentos. Tras aceptar (`si`), pregunta
+el tono (`original`, `en Re`, `F#m`, etc.) ANTES de buscar. La búsqueda y el pedido a
+la IA incluyen ese tono. Con el resultado crea directamente en Notas/
 un `BORRADOR - ... .docx` con progresiones, estructura disponible, la fuente y una lista
-de puntos por revisar. Se pide a la IA usar una sola referencia y se valida que indique
-la misma fuente para todas las secciones, pero no se exige coincidencia literal ni de
-orden de los acordes con el texto recuperado. Se acepta la propuesta de la IA como
+de puntos por revisar. No se bloquea por fuentes distintas, nombres de secciones,
+notación de acordes o coincidencia con el texto recuperado. Se acepta la propuesta de la IA como
 borrador; el DOCX advierte que los acordes no se verificaron contra las fuentes ni
-contra el audio. Se mantienen los límites, símbolos de acordes y referencias válidas.
+contra el audio. Solo se comprueba que la respuesta tenga contenido utilizable para
+el DOCX; se conservan los controles de cuota, permisos, cancelación y archivos existentes.
 No reproduce letras ni tablaturas. No escucha audio ni verifica
 el arreglo del cover: la referencia puede ser la original y siempre se indica que
 debe contrastarse contra el link. Los links de nuevas descargas se guardan como referencia;
 para canciones anteriores puede no disponer del link.
 
 Ejemplo: «armame una base de notas de esa en Re». `draft_notes` identifica la canción
-y `targetKey=D`. La transposición es determinista, conserva calidad y bajo invertido,
-y requiere tonalidad explícita en la misma fuente. No deduce un tono absoluto de `(+2)`.
-Rechaza cambios mayor/menor y transposición de fuentes que mencionen capo/cejilla sin
-aclarar su efecto. Si no hay tonalidad, puede conservar los acordes fuente sin transponer.
+y `targetKey=D`. La IA recibe el tono elegido y prepara los acordes; el backend los
+copia al documento sin transponerlos de nuevo ni validar musicalmente la propuesta.
 Las preguntas web caducan en 30 minutos y se cancelan al reiniciar; no se guarda el
 contenido de las páginas en el almacén de contexto. Varias canciones se preguntan una
-por una. No se vuelve a buscar al elegir tonalidad. Si ya existe el DOCX de destino,
-se conserva sin sobrescribir las ediciones. La búsqueda previa puede haber consumido una consulta.
-La notación compleja propuesta por la IA se conserva al elegir `original`, aunque
-el transpositor no la soporte. Si no se puede cambiar un símbolo, se ofrece conservar
-el original en vez de perder toda la búsqueda. La tonalidad no respaldada se trata como
-desconocida, sin impedir copiar los acordes originales.
+por una. No se busca hasta elegir tonalidad. Si ya existe el DOCX de destino,
+se conserva sin sobrescribir las ediciones ni consumir otra búsqueda.
+La notación y tonalidad propuestas por la IA se conservan como datos no verificados.
 Las fuentes pueden discrepar o estar equivocadas: sigue siendo un borrador, no una partitura validada.
 
 ## Referencias oficiales consultadas (19 de septiembre de 2026)
