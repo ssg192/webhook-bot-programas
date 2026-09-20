@@ -5,7 +5,7 @@ import java.util.regex.Pattern;
 
 /** Transposicion determinista: raiz, calidad y bajo separado, sin cambiar el modo. */
 public final class ChordTransposer {
-    private static final Pattern CHORD = Pattern.compile("^([A-G](?:#|b)?)(m?(?:maj|dim|aug|sus|add)?[0-9]*(?:[#b][0-9]+)?)(?:/([A-G](?:#|b)?))?$");
+    private static final Pattern CHORD = Pattern.compile("^([A-G](?:#|b)?)(?:(m?(?:maj|dim|aug|sus|add)?[0-9]*(?:[#b][0-9]+)*(?:\\([#b]?[0-9]+(?:,[#b]?[0-9]+)*\\))?))(?:/([A-G](?:#|b)?))?$");
     private static final Map<String, Integer> NOTES = Map.ofEntries(
             Map.entry("C", 0), Map.entry("B#", 0), Map.entry("C#", 1), Map.entry("Db", 1),
             Map.entry("D", 2), Map.entry("D#", 3), Map.entry("Eb", 3), Map.entry("E", 4), Map.entry("Fb", 4),
@@ -13,15 +13,27 @@ public final class ChordTransposer {
             Map.entry("G#", 8), Map.entry("Ab", 8), Map.entry("A", 9), Map.entry("A#", 10), Map.entry("Bb", 10), Map.entry("B", 11), Map.entry("Cb", 11));
     private ChordTransposer() {}
     public static boolean validKey(String key) { return key != null && key.matches("[A-G][#b]?m?") && NOTES.containsKey(key.replace("m", "")); }
-    public static boolean validChord(String chord) { return chord != null && CHORD.matcher(chord).matches(); }
+    public static boolean validChord(String chord) { return chord != null && (chord.equals("N.C.") || CHORD.matcher(normalize(chord)).matches()); }
+    public static boolean copyableChord(String chord) {
+        return chord != null && chord.length() <= 32 && (chord.equals("N.C.")
+                || normalize(chord).matches("[A-G][#b]?(?:(?:maj|min|dim|aug|sus|add|omit|no|alt|m|M)|[0-9#b+(),\\-])*(?:/[A-G][#b]?)?"));
+    }
+    public static String normalize(String chord) {
+        String value = chord.replace('♯', '#').replace('♭', 'b').replace("Δ", "maj").replace("°", "dim").replace("ø", "m7b5");
+        String[] spanish = {"Do", "Re", "Mi", "Fa", "Sol", "La", "Si"};
+        String[] english = {"C", "D", "E", "F", "G", "A", "B"};
+        for (int i = 0; i < spanish.length; i++) value = value.replaceAll("(?i)(^|/)" + spanish[i], "$1" + english[i]);
+        return value.replaceAll("^([A-G][#b]?)-", "$1m");
+    }
     public static int distance(String from, String to) {
         if (!validKey(from) || !validKey(to) || from.endsWith("m") != to.endsWith("m"))
             throw new IllegalArgumentException("No se puede transponer sin tonalidad de origen o cambiando mayor/menor");
         return Math.floorMod(NOTES.get(to.replace("m", "")) - NOTES.get(from.replace("m", "")), 12);
     }
     public static String transpose(String chord, int semitones, boolean flats) {
-        var match = CHORD.matcher(chord);
-        if (!match.matches()) throw new IllegalArgumentException("Acorde no reconocido");
+        if (chord.equals("N.C.")) return chord;
+        var match = CHORD.matcher(normalize(chord));
+        if (!match.matches()) throw new IllegalArgumentException("No puedo transponer el simbolo «" + chord + "»; puedes conservar los acordes originales");
         return note(match.group(1), semitones, flats) + match.group(2)
                 + (match.group(3) == null ? "" : "/" + note(match.group(3), semitones, flats));
     }

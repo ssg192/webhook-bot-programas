@@ -45,9 +45,26 @@ class ChordDraftServiceTest {
     @Test void refusesEmptyHallucinatedOrUnsupportedDrafts() {
         assertThrows(IOException.class, () -> service.parse(draft.replace("\"C\",\"G\",\"Am\",\"F\"", "\"C\",\"Bdim\""), sources));
         assertThrows(IOException.class, () -> service.parse(draft.replace("\"name\":\"Coro\"", "\"name\":\"Letra completa\""), sources));
-        assertThrows(IOException.class, () -> service.parse(draft.replace("\"key\":\"C\"", "\"key\":\"D\""), sources));
         assertThrows(IOException.class, () -> service.parse(draft.replace("\"corroboration\":2", "\"corroboration\":1"), sources));
         assertThrows(IOException.class, () -> service.parse("{}", sources));
+    }
+
+    @Test void unconfirmedKeyStillAllowsOriginalCopy() throws Exception {
+        var parsed = service.parse(draft.replace("\"key\":\"C\"", "\"key\":\"D\""), sources);
+        assertEquals("", parsed.key());
+        assertFalse(service.render("Tema", "", parsed, "").transposed());
+    }
+
+    @Test void preservesComplexNotationWithoutRequiringTransposition() throws Exception {
+        var page = List.of(new ChordDraftService.Source("Tema", "https://fuente.example/song", "Key: C. C7sus4 F"));
+        var parsed = service.parse(draft.replace("\"corroboration\":2", "\"corroboration\":0")
+                .replace("\"C\",\"G\",\"Am\",\"F\"", "\"C7sus4\",\"F\""), page);
+        assertNotNull(service.render("Tema", "", parsed, "").bytes());
+        assertThrows(IllegalArgumentException.class, () -> service.render("Tema", "", parsed, "D"));
+        assertEquals("D7(b9)/F#", ChordTransposer.transpose("C7(b9)/E", 2, false));
+        assertEquals("D/F#", ChordTransposer.transpose("Do/Mi", 2, false));
+        assertEquals("D#", ChordTransposer.transpose("C♯", 2, false));
+        assertFalse(ChordTransposer.copyableChord("Como"));
     }
 
     @Test void missingReferenceKeyPreservesChordsButCannotTranspose() throws Exception {

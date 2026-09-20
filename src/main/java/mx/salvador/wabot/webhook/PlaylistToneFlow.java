@@ -268,6 +268,7 @@ public class PlaylistToneFlow {
             }
             int selected = previous.selected() == null ? recentSelection(from, songs) : songs.indexOf(previous.selected()) + 1;
             var noteChoice = uploadedIds == null ? pipeline.pendingNoteChoice(from) : null;
+            var draftChoice = uploadedIds == null ? pipeline.pendingDraftChoice(from) : null;
             var names = songs.stream().map(AudioFile::name).toList();
             var result = interpreter.interpret(body, names, selected, history(from),
                     noteChoice != null ? "note_version" : uploadedIds == null ? previous.action() : "after_upload",
@@ -286,6 +287,15 @@ public class PlaylistToneFlow {
             if (noteChoice != null && pipeline.pendingNoteChoice(from) != noteChoice) return;
             rememberMessage(from, body);
             confirmations.remove(from); // Una correccion invalida la propuesta anterior.
+            if (result.intent().equals("draft_reply")) {
+                if (draftChoice == null || pipeline.pendingDraftChoice(from) != draftChoice) {
+                    whatsApp.replyText(from, "No hay una pregunta de notas web vigente. Pideme de nuevo la base que necesitas.");
+                    return;
+                }
+                pending.remove(from, previous);
+                pipeline.chooseDraft(from, draftChoice, result.targetKey());
+                return;
+            }
             if (result.intent().equals("draft_notes")) {
                 if (!pending.remove(from, previous)) return;
                 var song = songs.get(result.song() - 1);

@@ -11,6 +11,13 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.*;
 
 class GeminiSongInterpreterTest {
+    @Test void pendingWebReplyIsSeparateFromAudioTone() throws Exception {
+        var ai = new Stub();
+        for (String key : List.of("search", "decline", "original", "D", "F#m")) {
+            assertEquals(key, ai.parse("{\"intent\":\"draft_reply\",\"song\":0,\"semitones\":0,\"targetKey\":\"" + key + "\"}", 1).targetKey());
+        }
+        assertThrows(IOException.class, () -> ai.parse("{\"intent\":\"draft_reply\",\"song\":0,\"semitones\":2,\"targetKey\":\"D\"}", 1));
+    }
     @Test void draftNotesAcceptsTargetKeyOnlyForOneIdentifiedSong() throws Exception {
         var ai = new Stub();
         String request = "{\"intent\":\"draft_notes\",\"song\":1,\"semitones\":0,\"targetKey\":\"D\"}";

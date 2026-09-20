@@ -64,7 +64,10 @@ persistido en el volumen de contexto. Se reinicia con el mes; no programa búsqu
 automáticas. Los límites 432/433 del proveedor pausan hasta el mes siguiente, y 429
 pausa 15 minutos. Al agotarse la cuota se avisa y no se sube un documento vacío.
 
-Si encuentra una página con acordes respaldados y coincidentes con la canción, crea en Notas/
+Cuando falten notas, primero pregunta si se quiere buscar una versión base en internet.
+Responder `no` no hace búsquedas ni genera documentos. Tras aceptar (`si`), busca la
+versión original y muestra la referencia y tonalidad encontrada; pregunta si conservar
+los acordes (`original`) o transponer (`en Re`, `F#m`, etc.). Solo entonces crea en Notas/
 un `BORRADOR - ... .docx` con progresiones, estructura disponible, la fuente y una lista
 de puntos por revisar. Todas las progresiones proceden de una sola referencia para
 no mezclar arreglos. No reproduce letras ni tablaturas. No escucha audio ni verifica
@@ -77,7 +80,14 @@ y `targetKey=D`. La transposición es determinista, conserva calidad y bajo inve
 y requiere tonalidad explícita en la misma fuente. No deduce un tono absoluto de `(+2)`.
 Rechaza cambios mayor/menor y transposición de fuentes que mencionen capo/cejilla sin
 aclarar su efecto. Si no hay tonalidad, puede conservar los acordes fuente sin transponer.
-Los borradores ya existentes se reutilizan sin sobrescribir ediciones ni volver a investigar.
+Las preguntas web caducan en 30 minutos y se cancelan al reiniciar; no se guarda el
+contenido de las páginas en el almacén de contexto. Varias canciones se preguntan una
+por una. No se vuelve a buscar al elegir tonalidad. Si ya existe el DOCX de destino,
+se conserva sin sobrescribir las ediciones. La búsqueda previa puede haber consumido una consulta.
+La notación compleja respaldada por la fuente se conserva al elegir `original`, aunque
+el transpositor no la soporte. Si no se puede cambiar un símbolo, se ofrece conservar
+el original en vez de perder toda la búsqueda. La tonalidad no respaldada se trata como
+desconocida, sin impedir copiar los acordes originales.
 Las fuentes pueden discrepar o estar equivocadas: sigue siendo un borrador, no una partitura validada.
 
 ## Referencias oficiales consultadas (19 de septiembre de 2026)

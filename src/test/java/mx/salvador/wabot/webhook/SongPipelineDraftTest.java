@@ -29,11 +29,66 @@ class SongPipelineDraftTest {
     @Test void missingHistoryGeneratesDraftInNotesAndRegistersItsId() {
         pipeline.workState.reference("Tema", "https://youtu.be/exact-version");
         pipeline.generarNotas("sender", null);
+        assertEquals(0, drafts.calls);
+        assertEquals(0, drive.uploads);
+        pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "search");
         assertEquals(1, drafts.calls);
         assertEquals("https://youtu.be/exact-version", drafts.versionUrl);
+        assertEquals(0, drive.uploads);
+        pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "original");
         assertEquals("notes", drive.destination);
         assertTrue(drive.name.startsWith("BORRADOR - Tema"));
         assertEquals("draft-id", pipeline.workState.copies("Tema").get(0).id());
+    }
+
+    @Test void decliningDoesNotSearchOrCreateAnyFile() {
+        pipeline.generarNotas("sender", null);
+        assertEquals(0, drafts.calls);
+        pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "decline");
+        assertEquals(0, drafts.calls);
+        assertEquals(0, drive.uploads);
+        assertNull(pipeline.pendingDraftChoice("sender"));
+    }
+
+    @Test void decliningAfterResearchStillDoesNotCreateDocument() {
+        pipeline.generarNotas("sender", null);
+        pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "search");
+        pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "decline");
+        assertEquals(1, drafts.calls);
+        assertEquals(0, drive.uploads);
+    }
+
+    @Test void simpleKeyRepliesDoNotNeedAnotherAiCall() {
+        assertEquals("D", SongPipeline.draftKeyReply("en Re"));
+        assertEquals("F#m", SongPipeline.draftKeyReply("Fa sostenido menor"));
+        assertEquals("Bb", SongPipeline.draftKeyReply("Bb"));
+        assertNull(SongPipeline.draftKeyReply("baja esa cancion"));
+    }
+
+    @Test void staleApprovalCannotSearchOrCreateAndCancellationDiscardsChoice() {
+        pipeline.generarNotas("sender", null);
+        var permission = pipeline.pendingDraftChoice("sender");
+        pipeline.chooseDraft("other", permission, "search");
+        assertEquals(0, drafts.calls);
+        pipeline.chooseDraft("sender", permission, "D");
+        assertEquals(0, drafts.calls); // Elegir tono no equivale a autorizar buscar.
+        pipeline.chooseDraft("sender", permission, "search");
+        pipeline.chooseDraft("sender", permission, "original");
+        assertEquals(0, drive.uploads);
+        var keyQuestion = pipeline.pendingDraftChoice("sender");
+        pipeline.cancelNoteChoice("sender");
+        pipeline.chooseDraft("sender", keyQuestion, "original");
+        assertEquals(0, drive.uploads);
+    }
+
+    @Test void changingKeyUsesTheSameResearchAndDoesNotTouchAudio() {
+        pipeline.generarNotas("sender", null);
+        pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "search");
+        pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "D");
+        assertEquals(1, drafts.calls);
+        assertEquals(1, drive.uploads);
+        assertTrue(drive.name.endsWith(" - D.docx"));
+        assertEquals("notes", drive.destination);
     }
 
     @Test void existingHistoricalNotesNeverInvokeWeb() {
@@ -49,25 +104,29 @@ class SongPipelineDraftTest {
     @Test void existingDraftIsNotOverwrittenOrResearchedAgain() {
         drive.existing = new File().setId("edited-draft").setWebViewLink("edited-link");
         pipeline.createNoteDraft("sender", "Tema", "D", drive.ensureSundayStructure(LocalDate.now()));
-        assertEquals(0, drafts.calls);
+        pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "search");
+        pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "D");
+        assertEquals(1, drafts.calls);
         assertEquals(0, drive.uploads);
-        assertTrue(messages.get(0).contains("Conserve tus ediciones"));
+        assertTrue(messages.stream().anyMatch(text -> text.contains("Conserve el DOCX")));
     }
 
     @Test void researchFailureDoesNotUploadEmptyDocumentOrBreakNotesFlow() {
         drafts.fail = true;
         pipeline.generarNotas("sender", null);
+        pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "search");
         assertEquals(0, drive.uploads);
-        assertTrue(messages.stream().anyMatch(text -> text.contains("No pude crear la base")));
+        assertTrue(messages.stream().anyMatch(text -> text.contains("No cree ningun documento")));
     }
 
     private static class FakeDraft extends ChordDraftService {
         int calls; boolean fail; String versionUrl;
         @Override public boolean available() { return true; }
-        @Override public Document create(String song, String url, String target) throws Exception {
+        @Override Draft research(String song, String url) throws Exception {
             calls++; versionUrl = url;
             if (fail) throw new java.io.IOException("Cuota agotada");
-            return new Document(new byte[]{1, 2}, "C", false);
+            return new Draft("Tema - Original", "C", List.of(new Section("Coro", List.of("C", "G"), 1)),
+                    List.of(new Source("Tema", "https://fuente.example/song", "Key: C. C G")));
         }
     }
     private static class FakeDrive extends DriveService {

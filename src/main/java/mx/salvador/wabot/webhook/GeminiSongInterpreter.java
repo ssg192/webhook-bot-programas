@@ -90,7 +90,7 @@ public class GeminiSongInterpreter {
             throw new IOException("Solicitud fuera de limites");
         }
         var schema = Map.of("type", "OBJECT", "properties", Map.of(
-                "intent", Map.of("type", "STRING", "enum", List.of("draft_notes", "undo", "tone_batch", "remove_notes", "lyrics_song", "status", "status_notes", "status_lyrics", "note_version", "tone", "tone_notes", "notes", "lyrics", "notes_lyrics", "list", "remove", "cancel", "clarify", "unrelated")),
+                "intent", Map.of("type", "STRING", "enum", List.of("draft_reply", "draft_notes", "undo", "tone_batch", "remove_notes", "lyrics_song", "status", "status_notes", "status_lyrics", "note_version", "tone", "tone_notes", "notes", "lyrics", "notes_lyrics", "list", "remove", "cancel", "clarify", "unrelated")),
                 "targetKey", Map.of("type", "STRING"),
                 "song", Map.of("type", "INTEGER"),
                 "semitones", Map.of("type", "INTEGER"),
@@ -117,6 +117,12 @@ public class GeminiSongInterpreter {
                 No repitas canciones en adjustments. Para otros intents omite adjustments o usa [].
                 Si falta direccion/cantidad o hay un objetivo ambiguo en el lote entero, devuelve clarify.
                 Interpreta el significado, no busques frases exactas ni palabras clave obligatorias.
+                Si estadoTrabajo.preguntaBaseWeb existe, hay una pregunta de notas WEB, no de tono del audio.
+                intent=draft_reply, song=0, semitones=0, targetKey=search si acepta buscar en etapa permiso_busqueda,
+                decline si rechaza; en etapa elegir_tono, targetKey=original si quiere conservar los acordes
+                encontrados ('dejalo igual', 'el original') o la tonalidad inglesa como D para 'en Re'.
+                'cambialas a Re' en este contexto transpone el DOCX, NO cambia el audio.
+                No uses draft_reply sin preguntaBaseWeb. Una consulta de estado sigue siendo status.
                 intent=draft_notes para pedir una BASE WEB de acordes, investigar notas o crear un borrador
                 en una tonalidad: 'armame una base de notas de esa en Re', 'investiga los acordes de Ingrid'.
                 Requiere una sola cancion identificada (song>0), semitones=0. targetKey usa notacion inglesa
@@ -265,6 +271,13 @@ public class GeminiSongInterpreter {
         int semitones = result.path("semitones").intValue();
         String targetKey = result.path("targetKey").asText("");
         if (result.has("targetKey") && !result.path("targetKey").isTextual()) throw new IOException("Tonalidad invalida");
+        if (intent.equals("draft_reply")) {
+            if (song != 0 || semitones != 0 || (!List.of("search", "decline", "original").contains(targetKey)
+                    && !mx.salvador.wabot.media.ChordTransposer.validKey(targetKey))
+                    || (result.has("adjustments") && (!result.path("adjustments").isArray() || !result.path("adjustments").isEmpty())))
+                throw new IOException("Respuesta de notas invalida");
+            return new Interpretation(intent, 0, 0, List.of(), targetKey);
+        }
         if (intent.equals("draft_notes")) {
             if (song < 1 || song > songCount || semitones != 0
                     || (!targetKey.isEmpty() && !mx.salvador.wabot.media.ChordTransposer.validKey(targetKey))

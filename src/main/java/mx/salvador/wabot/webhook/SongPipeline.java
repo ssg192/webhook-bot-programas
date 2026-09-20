@@ -48,6 +48,117 @@ public class SongPipeline {
     @Inject ContextStore contextStore;
     @Inject ChordDraftService chordDrafts;
     private final Set<String> draftsInProgress = ConcurrentHashMap.newKeySet();
+    record DraftChoice(String song, String targetKey, DriveService.EstructuraDomingo folder,
+                       java.time.LocalDate sunday, java.time.Instant expires, ChordDraftService.Draft draft) {}
+    private final Map<String, List<DraftChoice>> draftChoices = new ConcurrentHashMap<>();
+
+    DraftChoice pendingDraftChoice(String from) {
+        var list = draftChoices.get(from);
+        if (list == null || list.isEmpty()) return null;
+        var first = list.get(0);
+        if (first.expires().isBefore(java.time.Instant.now()) || !first.sunday().equals(Fechas.proximoDomingo())) {
+            draftChoices.remove(from, list); return null;
+        }
+        return first;
+    }
+
+    private boolean replaceDraftChoice(String from, DraftChoice expected, DraftChoice next) {
+        var changed = new java.util.concurrent.atomic.AtomicBoolean();
+        draftChoices.computeIfPresent(from, (key, list) -> {
+            if (list.get(0) != expected) return list;
+            var updated = new ArrayList<>(list);
+            if (next == null) updated.remove(0); else updated.set(0, next);
+            changed.set(true);
+            return updated.isEmpty() ? null : List.copyOf(updated);
+        });
+        return changed.get();
+    }
+
+    private void askDraftChoice(String from, DraftChoice choice) {
+        if (choice.draft() == null) {
+            whatsApp.replyText(from, "No encontre notas de " + choice.song() + ". ¿Quieres buscar en internet una version base? Responde si o no.");
+        } else {
+            String tone = choice.draft().key().isEmpty() ? "La pagina no indica una tonalidad fiable." : "Tonalidad encontrada: " + choice.draft().key() + ".";
+            whatsApp.replyText(from, "Encontre: " + choice.draft().reference() + ". " + tone
+                    + "\n¿Conservo los acordes originales o los quieres en otro tono? Escribe original o, por ejemplo, en Re. Para salir, cancelar.");
+        }
+    }
+
+    private void nextDraftChoice(String from, DraftChoice choice) {
+        if (replaceDraftChoice(from, choice, null)) {
+            var next = pendingDraftChoice(from);
+            if (next != null) askDraftChoice(from, next);
+        }
+    }
+
+    void chooseDraft(String from, DraftChoice expected, String decision) {
+        if (expected == null || pendingDraftChoice(from) != expected) return;
+        if (decision.equals("decline")) {
+            workState.note(expected.song(), "Busqueda web omitida por el usuario; no se creo documento");
+            whatsApp.replyText(from, "De acuerdo, no creare notas de " + expected.song() + ".");
+            nextDraftChoice(from, expected); return;
+        }
+        if (expected.draft() == null && !decision.equals("search")) { askDraftChoice(from, expected); return; }
+        String task = from + ":" + expected.song();
+        if (!draftsInProgress.add(task)) { whatsApp.replyText(from, "Sigo procesando esa peticion; te aviso al terminar."); return; }
+        try {
+            if (expected.draft() == null) {
+                workState.note(expected.song(), "Buscando los acordes de la version original en internet");
+                whatsApp.replyText(from, "Buscando los acordes de la version original de " + expected.song() + "...");
+                var found = chordDrafts.research(expected.song(), workState.reference(expected.song()));
+                var ready = new DraftChoice(expected.song(), expected.targetKey(), expected.folder(), expected.sunday(), expected.expires(), found);
+                if (replaceDraftChoice(from, expected, ready)) {
+                    workState.note(expected.song(), "Acordes encontrados; esperando elegir tonalidad para el DOCX");
+                    askDraftChoice(from, ready);
+                }
+            } else {
+                String target = decision.equals("original") ? "" : decision;
+                if (!target.isEmpty() && !mx.salvador.wabot.media.ChordTransposer.validKey(target)) { askDraftChoice(from, expected); return; }
+                String name = "BORRADOR - " + expected.song().replaceAll("[\\\\/:*?\"<>|]", " ")
+                        + (target.isEmpty() ? " - base web" : " - " + target) + ".docx";
+                var existing = driveService.findFile(name, expected.folder().notasId());
+                ChordDraftService.Document doc = existing == null
+                        ? chordDrafts.render(expected.song(), workState.reference(expected.song()), expected.draft(), target) : null;
+                if (pendingDraftChoice(from) != expected) return;
+                var uploaded = existing != null ? existing : driveService.uploadBytes(name, doc.bytes(), DriveService.DOCX_MIME, expected.folder().notasId());
+                workState.copied(expected.song(), uploaded.getId(), name, expected.folder().notasId());
+                workState.note(expected.song(), "DOCX de acordes disponible; revisar antes de usar");
+                whatsApp.replyText(from, (existing != null ? "Conserve el DOCX existente y tus ediciones." : "Notas encontradas en internet. Revisa el DOCX antes de usarlo.") + "\n" + uploaded.getWebViewLink());
+                nextDraftChoice(from, expected);
+            }
+        } catch (Exception e) {
+            if (pendingDraftChoice(from) != expected) return;
+            String reason = e instanceof GeminiSongInterpreter.Failure failure ? failure.userMessage()
+                    : e instanceof java.io.IOException || e instanceof IllegalArgumentException ? e.getMessage() : "No pude completar la operacion";
+            whatsApp.replyText(from, reason + (expected.draft() == null ? ". No cree ningun documento." : ". Puedes elegir original para conservarlos sin transponer, o cancelar."));
+            if (expected.draft() == null) {
+                workState.note(expected.song(), "No se completo la busqueda web; no se creo documento");
+                nextDraftChoice(from, expected);
+            }
+        } finally { draftsInProgress.remove(task); }
+    }
+
+    private String draftDecision(String body, DraftChoice choice) {
+        String text = body.strip().toLowerCase(java.util.Locale.ROOT);
+        if (text.matches("no|no gracias|no buscar|omitir")) return "decline";
+        if (choice.draft() == null && text.matches("si|sí|si busca|sí busca|buscar|busca|buscar en la web")) return "search";
+        if (choice.draft() != null && text.matches("original|conservar original|conserva original|tono original")) return "original";
+        if (choice.draft() != null) return draftKeyReply(text);
+        return null;
+    }
+
+    static String draftKeyReply(String text) {
+        var match = Pattern.compile("(?i)^(?:(?:en|tono)\\s+)?(do|re|mi|fa|sol|la|si|[a-g])\\s*(sostenido|bemol|#|b)?\\s*(menor|mayor|m)?[.!]?$")
+                .matcher(text.strip());
+        if (!match.matches()) return null;
+        String root = match.group(1).toLowerCase(java.util.Locale.ROOT);
+        root = Map.of("do", "C", "re", "D", "mi", "E", "fa", "F", "sol", "G", "la", "A", "si", "B").getOrDefault(root, root.toUpperCase(java.util.Locale.ROOT));
+        String accidental = match.group(2) == null ? "" : match.group(2).toLowerCase(java.util.Locale.ROOT);
+        if (accidental.equals("sostenido")) accidental = "#";
+        if (accidental.equals("bemol")) accidental = "b";
+        String mode = match.group(3) == null ? "" : match.group(3).toLowerCase(java.util.Locale.ROOT);
+        return root + accidental + (mode.equals("menor") || mode.equals("m") ? "m" : "");
+    }
 
     /** Numeros permitidos (formato SIN el 1: 52 + 10 digitos). Vacio = todos. */
     @ConfigProperty(name = "bot.allowed-numbers")
@@ -75,6 +186,10 @@ public class SongPipeline {
             Map<String, Object> state = new LinkedHashMap<>(workState.snapshot(songs, count == null ? 0 : count.get()));
             state.put("peticionesDocumentosEnEspera", afterDownloads.getOrDefault(from, List.of()).size());
             state.put("conversacion", whatsApp == null ? List.of() : whatsApp.conversation(from));
+            var draftChoice = pendingDraftChoice(from);
+            if (draftChoice != null) state.put("preguntaBaseWeb", Map.of("cancion", draftChoice.song(),
+                    "etapa", draftChoice.draft() == null ? "permiso_busqueda" : "elegir_tono",
+                    "tonoFuente", draftChoice.draft() == null ? "" : draftChoice.draft().key()));
             pendingNoteChoice(from); // Descarta menus vencidos antes de formar el contexto.
             var pending = versionesPendientes.get(from);
             state.put("preguntasNotasPendientes", pending == null ? List.of() : pending.choices().stream()
@@ -147,6 +262,7 @@ public class SongPipeline {
     }
 
     void cancelNoteChoice(String from) {
+        draftChoices.remove(from);
         var pending = versionesPendientes.remove(from);
         persistNoteChoices();
         if (pending != null) pending.choices().forEach(choice -> workState.note(choice.song(), "Eleccion de version cancelada; no se confirmo la copia"));
@@ -238,6 +354,11 @@ public class SongPipeline {
         }
 
         // Respuesta corta a la pregunta de una nota con varias versiones.
+        DraftChoice draftChoice = pendingDraftChoice(from);
+        if (draftChoice != null) {
+            String decision = draftDecision(body, draftChoice);
+            if (decision != null) { workers.submit(() -> chooseDraft(from, draftChoice, decision)); return; }
+        }
         if (body != null && RESPUESTA_VERSION.matcher(body.strip()).matches()) {
             NoteChoice expected = pendingNoteChoice(from);
             if (lyricsInProgress.contains(from)) whatsApp.replyText(from,
@@ -541,7 +662,7 @@ public class SongPipeline {
                 sb.append(sb.length() > 0 ? "\n" : "");
                 sb.append("Sin notas en el historico:\n");
                 sinNotas.forEach(s -> sb.append("\u2022 ").append(s).append('\n'));
-                if (chordDrafts != null && chordDrafts.available()) sb.append("Buscare una base de acordes en internet y preparare un borrador editable.\n");
+                if (chordDrafts != null && chordDrafts.available()) sb.append("Puedo buscar una version base si lo autorizas.\n");
                 else sb.append("La busqueda web no esta configurada; no generare notas sin fuentes.\n");
             }
             whatsApp.replyText(from, sb.toString());
@@ -564,39 +685,26 @@ public class SongPipeline {
     }
 
     void createNoteDraft(String from, String song, String targetKey, DriveService.EstructuraDomingo folder) {
+        offerNoteDraft(from, song, targetKey, folder);
+    }
+
+    private void offerNoteDraft(String from, String song, String targetKey, DriveService.EstructuraDomingo folder) {
         if (chordDrafts == null || !chordDrafts.available()) {
             whatsApp.replyText(from, "La investigacion web de notas no esta habilitada. Configura NOTES_WEB_ENABLED y TAVILY_API_KEY; tambien requiere Gemini.");
             return;
         }
         String title = MusicWorkState.key(song);
-        String taskKey = folder.notasId() + ":" + title + ":" + targetKey;
-        if (!draftsInProgress.add(taskKey)) {
-            whatsApp.replyText(from, "Ya estoy investigando la base de " + title + "; te avisare cuando termine.");
-            return;
+        pendingDraftChoice(from);
+        var choice = new DraftChoice(title, targetKey, folder, Fechas.proximoDomingo(), java.time.Instant.now().plusSeconds(1800), null);
+        draftChoices.compute(from, (key, list) -> {
+            var queue = new ArrayList<>(list == null ? List.<DraftChoice>of() : list);
+            if (queue.stream().noneMatch(item -> item.song().equals(title)) && queue.size() < 20) queue.add(choice);
+            return List.copyOf(queue);
+        });
+        workState.note(title, "Sin notas; esperando permiso para buscar una version base en internet");
+        if (pendingDraftChoice(from) == choice) {
+            askDraftChoice(from, choice);
         }
-        try {
-            String name = "BORRADOR - " + title.replaceAll("[\\\\/:*?\"<>|]", " ")
-                    + (targetKey.isEmpty() ? " - base web" : " - " + targetKey) + ".docx";
-            var existing = driveService.findFile(name, folder.notasId());
-            if (existing != null) {
-                workState.copied(title, existing.getId(), name, folder.notasId());
-                workState.note(title, "Borrador web disponible; revisar contra el audio");
-                whatsApp.replyText(from, "Ya hay un borrador de " + title + ". Conserve tus ediciones:\n" + existing.getWebViewLink());
-                return;
-            }
-            workState.note(title, "Investigando una base de acordes en internet");
-            whatsApp.replyText(from, "Buscando acordes y estructura de " + title + ". El resultado sera una base revisable, no una transcripcion del cover.");
-            var doc = chordDrafts.create(title, workState.reference(title), targetKey);
-            var uploaded = driveService.uploadBytes(name, doc.bytes(), DriveService.DOCX_MIME, folder.notasId());
-            workState.copied(title, uploaded.getId(), name, folder.notasId());
-            workState.note(title, "Borrador web creado" + (doc.key().isEmpty() ? " sin tonalidad confirmada" : " en " + doc.key()) + "; revisar contra la version del link");
-            whatsApp.replyText(from, "Notas de " + title + " encontradas en internet. Revisa el DOCX antes de usarlo.\n" + uploaded.getWebViewLink());
-        } catch (Exception e) {
-            workState.note(title, "No se completo la base web; no hay un borrador confirmado");
-            String reason = e instanceof GeminiSongInterpreter.Failure failure ? failure.userMessage()
-                    : e instanceof java.io.IOException || e instanceof IllegalArgumentException ? e.getMessage() : "No pude completar la investigacion o subir el documento";
-            whatsApp.replyText(from, "No pude crear la base de " + title + ": " + reason + ". Puedes aportar una fuente de acordes o confirmar la tonalidad de referencia.");
-        } finally { draftsInProgress.remove(taskKey); }
     }
 
     /** Copia la version indicada para la cancion pendiente y, si aplica, pregunta la siguiente. */
