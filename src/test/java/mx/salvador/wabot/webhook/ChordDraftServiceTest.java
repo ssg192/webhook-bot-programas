@@ -42,8 +42,8 @@ class ChordDraftServiceTest {
         }
     }
 
-    @Test void refusesEmptyHallucinatedOrUnsupportedDrafts() {
-        assertThrows(IOException.class, () -> service.parse(draft.replace("\"C\",\"G\",\"Am\",\"F\"", "\"C\",\"Bdim\""), sources));
+    @Test void refusesEmptyOrMalformedDrafts() {
+        assertThrows(IOException.class, () -> service.parse(draft.replace("\"Am\"", "\"esto no es un acorde\""), sources));
         assertThrows(IOException.class, () -> service.parse(draft.replace("\"name\":\"Coro\"", "\"name\":\"Letra completa\""), sources));
         assertThrows(IOException.class, () -> service.parse(draft.replace("\"corroboration\":2", "\"corroboration\":1"), sources));
         assertThrows(IOException.class, () -> service.parse("{}", sources));
@@ -98,11 +98,22 @@ class ChordDraftServiceTest {
         assertTrue(failure.getMessage().contains("proximo mes"));
     }
 
-    @Test void acceptsExtraFieldsAndMarkdownWithoutLosingEvidenceChecks() throws Exception {
+    @Test void acceptsExtraFieldsAndMarkdownWithoutLosingSymbolChecks() throws Exception {
         String extended = draft.replace("\"reference\":", "\"explanation\":\"extra\",\"reference\":")
                 .replace("\"name\":", "\"comment\":\"extra\",\"name\":");
         assertEquals(service.parse(draft, sources), service.parse("```json\n" + extended + "```", sources));
-        assertThrows(IOException.class, () -> service.parse(extended.replace("\"Am\"", "\"Bdim\""), sources));
+        assertThrows(IOException.class, () -> service.parse(extended.replace("\"Am\"", "\"invalido\""), sources));
+    }
+
+    @Test void createsReviewableDocEvenWhenAiChordsDoNotMatchSourceText() throws Exception {
+        var parsed = service.parse(draft.replace("\"C\",\"G\",\"Am\",\"F\"", "\"F\",\"Bdim\",\"C\""), sources);
+        var document = service.render("Tema", "", parsed, "");
+        try (var doc = new XWPFDocument(new ByteArrayInputStream(document.bytes()))) {
+            String text = doc.getParagraphs().stream().map(p -> p.getText()).collect(java.util.stream.Collectors.joining("\n"));
+            assertTrue(text.contains("F | Bdim | C"));
+            assertTrue(text.contains("no se verificaron contra el texto de las fuentes ni contra el audio"));
+            assertTrue(text.contains("propuesta de IA"));
+        }
     }
 
     @Test void optionalMetadataCanBeAbsentWithoutInventingKeyOrSources() throws Exception {

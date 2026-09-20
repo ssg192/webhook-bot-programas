@@ -69,8 +69,12 @@ Responder `no` no hace búsquedas ni genera documentos. Tras aceptar (`si`), bus
 versión original y muestra la referencia y tonalidad encontrada; pregunta si conservar
 los acordes (`original`) o transponer (`en Re`, `F#m`, etc.). Solo entonces crea en Notas/
 un `BORRADOR - ... .docx` con progresiones, estructura disponible, la fuente y una lista
-de puntos por revisar. Todas las progresiones proceden de una sola referencia para
-no mezclar arreglos. No reproduce letras ni tablaturas. No escucha audio ni verifica
+de puntos por revisar. Se pide a la IA usar una sola referencia y se valida que indique
+la misma fuente para todas las secciones, pero no se exige coincidencia literal ni de
+orden de los acordes con el texto recuperado. Se acepta la propuesta de la IA como
+borrador; el DOCX advierte que los acordes no se verificaron contra las fuentes ni
+contra el audio. Se mantienen los límites, símbolos de acordes y referencias válidas.
+No reproduce letras ni tablaturas. No escucha audio ni verifica
 el arreglo del cover: la referencia puede ser la original y siempre se indica que
 debe contrastarse contra el link. Los links de nuevas descargas se guardan como referencia;
 para canciones anteriores puede no disponer del link.
@@ -84,7 +88,7 @@ Las preguntas web caducan en 30 minutos y se cancelan al reiniciar; no se guarda
 contenido de las páginas en el almacén de contexto. Varias canciones se preguntan una
 por una. No se vuelve a buscar al elegir tonalidad. Si ya existe el DOCX de destino,
 se conserva sin sobrescribir las ediciones. La búsqueda previa puede haber consumido una consulta.
-La notación compleja respaldada por la fuente se conserva al elegir `original`, aunque
+La notación compleja propuesta por la IA se conserva al elegir `original`, aunque
 el transpositor no la soporte. Si no se puede cambiar un símbolo, se ofrece conservar
 el original en vez de perder toda la búsqueda. La tonalidad no respaldada se trata como
 desconocida, sin impedir copiar los acordes originales.

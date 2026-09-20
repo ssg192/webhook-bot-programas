@@ -163,14 +163,9 @@ public class ChordDraftService {
             var chords = section.path("chords");
             if (!chords.isArray() || chords.size() < 2 || chords.size() > 12) throw new IOException("Progresion sin validar");
             var symbols = new ArrayList<String>();
-            String evidence = sources.get(source - 1).content();
-            int cursor = 0;
             for (var chord : chords) {
                 String symbol = chord.asText();
                 if (!ChordTransposer.copyableChord(symbol)) throw new IOException("El simbolo «" + symbol.substring(0, Math.min(32, symbol.length())) + "» no parece un acorde; necesito revisar la fuente");
-                var match = Pattern.compile("(?<![A-Za-z0-9#b])" + Pattern.quote(symbol) + "(?![A-Za-z0-9#b/])").matcher(evidence);
-                if (!match.find(cursor)) throw new IOException("La fuente no respalda la progresion propuesta");
-                cursor = match.end();
                 symbols.add(symbol);
             }
             parsed.add(new Section(section.path("name").asText(), List.copyOf(symbols), source));
@@ -212,14 +207,14 @@ public class ChordDraftService {
         String finalKey = transpose ? targetKey : draft.key();
         try (var doc = new XWPFDocument(); var out = new ByteArrayOutputStream()) {
             line(doc, "BORRADOR DE ACORDES — " + song);
-            line(doc, "Notas recuperadas de internet. Revisa el DOCX antes de usarlo; no se verificaron contra el audio.");
+            line(doc, "Borrador preparado por IA a partir de una busqueda en internet. Los acordes no se verificaron contra el texto de las fuentes ni contra el audio. Revisa el DOCX antes de usarlo.");
             if (safeUrl(versionUrl)) line(doc, "Version solicitada: " + versionUrl);
             line(doc, "Referencia encontrada: " + draft.reference());
             line(doc, "Tonalidad de referencia: " + (draft.key().isEmpty() ? "No determinada" : draft.key()));
-            line(doc, "Tonalidad de esta base: " + (finalKey.isEmpty() ? "Sin determinar; acordes conservados de las fuentes" : finalKey));
+            line(doc, "Tonalidad de esta base: " + (finalKey.isEmpty() ? "Sin determinar; acordes propuestos por la IA sin transponer" : finalKey));
             line(doc, "La tonalidad y progresiones del cover NO estan verificadas. No se infieren del titulo ni del sufijo de semitonos del audio.");
             for (var section : draft.sections()) {
-                line(doc, section.name() + " — base segun fuente [" + section.source() + "]; revisar estructura");
+                line(doc, section.name() + " — propuesta de IA; referencia indicada [" + section.source() + "]; revisar acordes y estructura");
                 line(doc, String.join(" | ", section.chords().stream().map(chord -> transpose
                         ? ChordTransposer.transpose(chord, delta, finalKey.contains("b")) : chord).toList()));
             }
