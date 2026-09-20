@@ -115,6 +115,13 @@ Las fuentes pueden discrepar o estar equivocadas: sigue siendo un borrador, no u
 
 ## Referencias oficiales consultadas (19 de septiembre de 2026)
 
+Diagnóstico de búsqueda: filtrar logs por `notes-web`. Cada búsqueda tiene `search=<id>`
+con consulta, cantidad de resultados, página (sin query/fragmento), título, tamaños de
+`raw_content`/resumen y decisión: `accepted`, `missing_raw_content`, `video`,
+`raw_content_too_large`, `unsafe_url` o `duplicate`. Incluye duración, HTTP de Tavily
+y etapas `research`, `gemini`, `parsed`/`parse_failed`. No se registran claves, cuerpos
+de proveedores, contenido de páginas ni letras. Estos logs no cambian la búsqueda.
+
 - [Google: conversaciones multiturno en GenerateContent](https://ai.google.dev/gemini-api/docs/generate-content/text-generation):
   el historial debe enviarse en cada turno para proporcionar contexto conversacional.
 - [Google: salidas estructuradas](https://ai.google.dev/gemini-api/docs/generate-content/structured-output):

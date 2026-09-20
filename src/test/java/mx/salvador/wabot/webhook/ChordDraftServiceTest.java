@@ -10,6 +10,12 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ChordDraftServiceTest {
+    @Test void diagnosticLogsDoNotExposeUrlCredentialsOrAllowNewLines() {
+        assertEquals("https://example.com/chart", ChordDraftService.logUrl("https://example.com/chart?token=secret#private"));
+        assertEquals("[invalid-or-unsafe-url]", ChordDraftService.logUrl("https://user:secret@example.com/chart"));
+        assertFalse(ChordDraftService.logText("title\nforged\rentry").contains("\n"));
+        assertEquals(500, ChordDraftService.logText("x".repeat(600)).length());
+    }
     private final ChordDraftService service = new ChordDraftService();
     private final List<ChordDraftService.Source> sources = List.of(
             new ChordDraftService.Source("Tema - Artista (original)", "https://fuente-a.example/song", "Tema Artista. Key: C. Coro C G Am F C/E G"),

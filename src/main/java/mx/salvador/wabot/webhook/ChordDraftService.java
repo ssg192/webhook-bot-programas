@@ -17,6 +17,7 @@ import java.util.regex.Pattern;
 /** Busqueda acotada y borrador armonico; no escucha audio ni afirma verificar covers. */
 @ApplicationScoped
 public class ChordDraftService {
+    private static final org.jboss.logging.Logger LOG = org.jboss.logging.Logger.getLogger(ChordDraftService.class);
     @Inject ObjectMapper json;
     @Inject GeminiSongInterpreter gemini;
     @Inject ContextStore contextStore;
@@ -72,6 +73,7 @@ public class ChordDraftService {
         if (song.isBlank() || song.length() > 350)
             throw new IOException("Cancion o tonalidad fuera de limites");
         List<Source> sources = search(song + (targetKey.isEmpty() ? " tono original" : " tonalidad " + targetKey));
+        LOG.infof("notes-web stage=research song=%s target=%s sources=%d", logText(song), logText(targetKey.isEmpty() ? "original" : targetKey), sources.size());
         if (sources.isEmpty()) throw new IOException("No pude recuperar una pagina de acordes completa. Los resumenes y videos no bastan; comparte una pagina de acordes de la version que buscas");
         String input = json.writeValueAsString(Map.of("cancionSolicitada", song, "linkVersionSolicitada", versionUrl, "tonoSolicitado", targetKey.isEmpty() ? "original" : targetKey, "fuentes", sources));
         String instructions = """
@@ -123,10 +125,19 @@ public class ChordDraftService {
                 "contents", List.of(Map.of("role", "user", "parts", List.of(Map.of("text", input)))),
                 "generationConfig", Map.of("responseMimeType", "application/json", "temperature", 0, "maxOutputTokens", 6000))));
         var candidate = json.readTree(response).path("candidates").path(0);
+        LOG.infof("notes-web stage=gemini song=%s finish_reason=%s response_chars=%d", logText(song), logText(candidate.path("finishReason").asText()), response.length());
         if (!candidate.path("finishReason").asText().equals("STOP")) throw new IOException("La investigacion quedo incompleta; no cree notas");
         var text = new StringBuilder();
         for (var part : candidate.path("content").path("parts")) if (!part.path("thought").asBoolean()) text.append(part.path("text").asText());
-        return parseResearch(text.toString(), sources);
+        try {
+            var draft = parseResearch(text.toString(), sources);
+            LOG.infof("notes-web stage=parsed song=%s sections=%d lines=%d source_indices=%s", logText(song), draft.sections().size(),
+                    draft.sections().stream().mapToInt(s -> s.lines().size()).sum(), draft.sections().stream().map(Section::source).distinct().toList());
+            return draft;
+        } catch (IOException e) {
+            LOG.warnf("notes-web stage=parse_failed song=%s type=%s", logText(song), e.getClass().getSimpleName());
+            throw e;
+        }
     }
 
     Draft parseResearch(String text, List<Source> sources) throws IOException {
@@ -151,21 +162,56 @@ public class ChordDraftService {
     }
 
     List<Source> search(String song) throws Exception {
+        String trace = UUID.randomUUID().toString().substring(0, 8);
+        long started = System.nanoTime();
+        String query = song + " acordes guitarra letra version original";
+        LOG.infof("notes-web search=%s start query=%s depth=basic max_results=6 raw_content=text opens_links=false", trace, logText(query));
+        try {
         reserveSearch();
-        String response = searchExchange(json.writeValueAsString(Map.of("query", song + " acordes guitarra letra version original",
+        String response = searchExchange(json.writeValueAsString(Map.of("query", query,
                 "search_depth", "basic", "auto_parameters", false, "max_results", 6,
                 "include_answer", false, "include_raw_content", "text")));
         var sources = new ArrayList<Source>();
         var seen = new HashSet<String>();
-        for (var result : json.readTree(response).path("results")) {
+        var results = json.readTree(response).path("results");
+        LOG.infof("notes-web search=%s received results=%d results_array=%s response_chars=%d", trace, results.size(), results.isArray(), response.length());
+        int rank = 0;
+        for (var result : results) {
+            rank++;
             String url = result.path("url").asText(), content = result.path("raw_content").asText("");
             // Snippets and silently truncated pages cannot establish a complete chart.
-            if (!safeUrl(url) || videoUrl(url) || content.isBlank() || content.length() > 40000 || !seen.add(url)) continue;
+            String reason = !safeUrl(url) ? "unsafe_url" : videoUrl(url) ? "video"
+                    : content.isBlank() ? "missing_raw_content" : content.length() > 40000 ? "raw_content_too_large"
+                    : !seen.add(url) ? "duplicate" : "accepted";
+            LOG.infof("notes-web search=%s result=%d page=%s title=%s raw_chars=%d snippet_chars=%d decision=%s",
+                    trace, rank, logUrl(url), logText(result.path("title").asText()), content.length(),
+                    result.path("content").asText("").length(), reason);
+            if (!reason.equals("accepted")) continue;
             String title = result.path("title").asText();
             sources.add(new Source(title.substring(0, Math.min(180, title.length())), url, content));
             if (sources.size() == 6) break;
         }
+        LOG.infof("notes-web search=%s end accepted=%d examined=%d elapsed_ms=%d", trace, sources.size(), rank, (System.nanoTime() - started) / 1_000_000);
         return List.copyOf(sources);
+        } catch (Exception e) {
+            // Provider messages/bodies can contain credentials or page content; log type only.
+            LOG.warnf("notes-web search=%s failed type=%s elapsed_ms=%d", trace, e.getClass().getSimpleName(), (System.nanoTime() - started) / 1_000_000);
+            throw e;
+        }
+    }
+
+    static String logText(String value) {
+        String clean = value.replaceAll("[\\p{Cntrl}\\u2028\\u2029]", " ");
+        return clean.substring(0, Math.min(500, clean.length()));
+    }
+
+    static String logUrl(String value) {
+        try {
+            var uri = URI.create(value);
+            if (!safeUrl(value)) return "[invalid-or-unsafe-url]";
+            // Omit user info, query parameters and fragments, which may contain tokens.
+            return logText(uri.getScheme() + "://" + uri.getHost() + (uri.getRawPath() == null ? "" : uri.getRawPath()));
+        } catch (IllegalArgumentException e) { return "[invalid-url]"; }
     }
 
     String searchExchange(String body) throws Exception {
@@ -173,6 +219,7 @@ public class ChordDraftService {
                 .timeout(Duration.ofSeconds(25)).header("Authorization", "Bearer " + apiKey.orElseThrow())
                 .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body)).build();
         var result = client.send(request, HttpResponse.BodyHandlers.ofString());
+        LOG.infof("notes-web provider=tavily status=%d response_chars=%d", result.statusCode(), result.body().length());
         if (List.of(429, 432, 433).contains(result.statusCode())) {
             pauseSearch(result.statusCode());
             throw new IOException("El buscador alcanzo su cuota o limite; busqueda pausada, sin pagos ni reintentos automaticos (HTTP " + result.statusCode() + ")");
