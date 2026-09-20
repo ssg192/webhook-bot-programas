@@ -147,6 +147,28 @@ Las fuentes pueden discrepar o estar equivocadas: sigue siendo un borrador, no u
 
 ## Referencias oficiales consultadas (19 de septiembre de 2026)
 
+### Lectura y escritura en Drive
+
+La entrada de lenguaje natural y el menú de tonalidad usan `findSundayStructure`,
+que solo busca. Si no existe la fecha, se informa sin crear carpetas. Una estructura
+parcial se consulta tal cual; no se crean Playlist/Notas automáticamente al leer.
+Los cambios locales de historial/estado y respuestas de WhatsApp no se consideran
+escrituras de archivos en Drive.
+
+| Acción | Acceso a Drive |
+| --- | --- |
+| Consultar programa, canciones, notas, letras o tareas | Solo lectura |
+| Listar canciones, pedir aclaración, abrir menú de tonalidad, cancelar | Solo lectura (o sin acceso) |
+| Descargar/subir canciones | Lectura y escritura; puede crear carpetas |
+| Crear/copiar notas o generar/agregar letras | Lectura y escritura; puede crear carpetas |
+| Buscar base web y generar DOCX autorizado | Lectura y escritura; consulta proveedores externos |
+| Aplicar cambio de tono al audio | Lectura y escritura sobre archivos existentes |
+| Eliminar notas/audio o deshacer | Lectura y escritura; requiere confirmación |
+| Indexar histórico | Lectura y escritura del índice persistente en Drive |
+
+`ensureSundayStructure` queda en los flujos explícitos de generación, copia y subida,
+no en la interpretación de preguntas. Las carpetas creadas anteriormente no se borran.
+
 - [Tavily Extract](https://docs.tavily.com/documentation/api-reference/endpoint/extract):
   extracción por lote de URLs, contenido recuperado y resultados fallidos.
 - [Gemini: reintentos](https://ai.google.dev/gemini-api/docs/troubleshooting):

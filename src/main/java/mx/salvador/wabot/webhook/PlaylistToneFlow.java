@@ -255,7 +255,12 @@ public class PlaylistToneFlow {
                 previous = null;
             }
             LocalDate sunday = previous == null ? Fechas.proximoDomingo() : previous.sunday();
-            var folder = previous == null ? drive.ensureSundayStructure(sunday) : previous.folder();
+            var folder = drive.findSundayStructure(sunday);
+            if (folder == null) {
+                whatsApp.replyText(from, "No encontre programa ni carpeta para " + Fechas.nombreCarpeta(sunday)
+                        + ". No cree carpetas. Si quieres agregar canciones, envia sus links.");
+                return;
+            }
             List<AudioFile> songs = drive.listAudioFiles(folder.playlistId());
             if (uploadedIds != null) {
                 // "La segunda" en un mensaje con links sigue el orden de esos links.
@@ -543,7 +548,11 @@ public class PlaylistToneFlow {
     private void start(String from) throws Exception {
         pending.remove(from);
         LocalDate sunday = Fechas.proximoDomingo();
-        var folder = drive.ensureSundayStructure(sunday);
+        var folder = drive.findSundayStructure(sunday);
+        if (folder == null) {
+            whatsApp.replyText(from, "No hay playlist para este domingo. Envia primero los links de las canciones.");
+            return;
+        }
         List<AudioFile> songs = drive.listAudioFiles(folder.playlistId());
         if (songs.isEmpty()) {
             whatsApp.replyText(from, "Aun no hay canciones en la playlist. Envia primero sus links de YouTube.");

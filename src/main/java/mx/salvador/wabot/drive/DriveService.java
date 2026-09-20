@@ -64,6 +64,18 @@ public class DriveService {
 
     public record EstructuraDomingo(String playlistId, String notasId, String domingoId, String link) {}
 
+    /** Read-only lookup; missing date returns null, missing child folders remain null. */
+    public EstructuraDomingo findSundayStructure(java.time.LocalDate domingo) throws Exception {
+        String year = findFolder(mx.salvador.wabot.util.Fechas.anio(domingo), rootFolderId);
+        if (year == null) return null;
+        String month = findFolder(mx.salvador.wabot.util.Fechas.mes(domingo), year);
+        if (month == null) return null;
+        String date = findFolder(mx.salvador.wabot.util.Fechas.nombreCarpeta(domingo), month);
+        if (date == null) return null;
+        return new EstructuraDomingo(findFolder("Playlist", date), findFolder("Notas", date), date,
+                "https://drive.google.com/drive/folders/" + date);
+    }
+
     /**
      * Crea (si no existe):
      *   root/Domingo YYYY-MM-DD/{Playlist, Notas}
@@ -115,6 +127,7 @@ public class DriveService {
 
     /** Guarda IDs y versiones para que la numeracion del menu no cambie al responder. */
     public List<AudioFile> listAudioFiles(String parentId) throws Exception {
+        if (parentId == null) return List.of();
         List<AudioFile> result = new ArrayList<>();
         String pageToken = null;
         do {
@@ -175,6 +188,7 @@ public class DriveService {
 
     /** Inventario directo y paginado; incluye archivos manuales, nunca papelera. */
     public List<File> listFolderFiles(String folder) throws Exception {
+        if (folder == null) return List.of();
         var files = new ArrayList<File>();
         String token = null;
         do {
@@ -428,7 +442,7 @@ public class DriveService {
      * al final, y un "name = 'Julio'" exacto no las encontraba -> duplicados.
      * Si varias empatan, gana la mas antigua (setOrderBy createdTime).
      */
-    private String findOrCreateFolder(String name, String parentId) throws Exception {
+    String findFolder(String name, String parentId) throws Exception {
         String buscado = norm(name);
         String pageToken = null;
 
@@ -452,6 +466,12 @@ public class DriveService {
             pageToken = list.getNextPageToken();
         } while (pageToken != null);
 
+        return null;
+    }
+
+    private String findOrCreateFolder(String name, String parentId) throws Exception {
+        String existing = findFolder(name, parentId);
+        if (existing != null) return existing;
         File folder = new File()
                 .setName(name)
                 .setMimeType(FOLDER_MIME)

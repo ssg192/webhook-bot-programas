@@ -164,6 +164,9 @@ class SongPipelineInstructionsTest {
     private class FakeDrive extends DriveService {
         final List<AudioFile> songs = Collections.synchronizedList(new ArrayList<>());
         final AtomicInteger ids = new AtomicInteger();
+        @Override public EstructuraDomingo findSundayStructure(LocalDate date) {
+            return new EstructuraDomingo("playlist", "notes", "sunday", "folder-link");
+        }
         @Override public EstructuraDomingo ensureSundayStructure(LocalDate date) {
             return new EstructuraDomingo("playlist", "notes", "sunday", "folder-link");
         }

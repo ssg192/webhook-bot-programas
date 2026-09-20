@@ -20,6 +20,24 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 
 class PlaylistToneFlowTest {
+    @Test void missingProgramQueryDoesNotCreateFoldersOrFiles() {
+        drive.missingFolder = true;
+        flow.interpreter = new FakeInterpreter("list", 0, 0);
+        flow.handleNatural("a", "tenemos programa para este domingo?");
+        assertEquals(0, drive.folderWrites);
+        assertTrue(drive.events.isEmpty());
+        assertTrue(messages.last().contains("No encontre programa"));
+        assertTrue(messages.last().contains("No cree carpetas"));
+    }
+
+    @Test void readOnlyIntentsDoNotEnsureFolders() {
+        for (String intent : List.of("list", "status", "status_notes", "status_lyrics", "clarify", "unrelated")) {
+            flow.interpreter = new FakeInterpreter(intent, 0, 0);
+            flow.handleNatural("a", "consulta de estado");
+        }
+        assertEquals(0, drive.folderWrites);
+        assertTrue(drive.events.isEmpty());
+    }
     @Test
     void staleConfirmationButtonCannotApproveANewerProposal() {
         flow.interpreter = new FakeInterpreter("remove", 1, 0);
@@ -601,8 +619,15 @@ class PlaylistToneFlowTest {
         String failUpload;
         boolean failTrash;
         List<AudioFile> uploaded = new ArrayList<>();
+        int folderWrites;
+        boolean missingFolder;
+
+        @Override public EstructuraDomingo findSundayStructure(LocalDate date) {
+            return missingFolder ? null : new EstructuraDomingo("playlist", "notes", "sunday", "folder-link");
+        }
 
         @Override public EstructuraDomingo ensureSundayStructure(LocalDate date) {
+            folderWrites++;
             return new EstructuraDomingo("playlist", "notes", "sunday", "folder-link");
         }
         @Override public List<AudioFile> listAudioFiles(String parentId) {
