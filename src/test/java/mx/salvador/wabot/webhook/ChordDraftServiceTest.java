@@ -210,13 +210,25 @@ class ChordDraftServiceTest {
         assertThrows(IOException.class, () -> service.parse(bad, sources));
     }
 
-    @Test void researchRequiresExplicitIdentityCompletenessAndSingleSource() throws Exception {
+    @Test void researchDoesNotRequireInternalCertificationFields() throws Exception {
         String checked = draft.replace("\"reference\":", "\"identityMatch\":true,\"complete\":true,\"source\":1,\"reference\":");
         assertNotNull(service.parseResearch(checked, sources));
-        assertTrue(assertThrows(IOException.class, () -> service.parseResearch(checked.replace("\"complete\":true", "\"complete\":false"), sources)).getMessage().contains("incompleta"));
-        assertTrue(assertThrows(IOException.class, () -> service.parseResearch(checked.replace("\"identityMatch\":true", "\"identityMatch\":false"), sources)).getMessage().contains("version"));
-        assertThrows(IOException.class, () -> service.parseResearch(draft, sources));
-        assertThrows(IOException.class, () -> service.parseResearch(checked.replace("\"source\":1}]", "\"source\":2}]"), sources));
+        assertNotNull(service.parseResearch(checked.replace("\"complete\":true", "\"complete\":false"), sources));
+        assertNotNull(service.parseResearch(draft, sources));
+        assertNotNull(service.parseResearch(checked.replace("\"source\":1}]", "\"source\":2}]"), sources));
+    }
+
+    @Test void referencesAcceptNumbersStringsUrlsAndSectionOnlyMetadata() throws Exception {
+        for (String value : List.of("1", "\"1\"", "\"[1]\"", "\"https://fuente-a.example/song\"", "{\"url\":\"https://fuente-a.example/song\"}")) {
+            var parsed = service.parseResearch(draft.replace("\"source\":1", "\"source\":" + value), sources);
+            assertEquals(1, parsed.sections().get(0).source());
+            assertNotNull(service.render("Tema", "", parsed, "").bytes());
+        }
+        var unknown = service.parseResearch(draft.replace("\"source\":1", "\"source\":999"), sources);
+        assertEquals(0, unknown.sections().get(0).source());
+        assertNotNull(service.render("Tema", "", unknown, "").bytes());
+        var inherited = service.parseResearch(draft.replace("\"reference\":", "\"source\":\"1\",\"reference\":").replace(",\"source\":1", ""), sources);
+        assertEquals(1, inherited.sections().get(0).source());
     }
 
     @Test void searchDoesNotUseVideoSnippetsOrSilentlyCutOffPages() throws Exception {

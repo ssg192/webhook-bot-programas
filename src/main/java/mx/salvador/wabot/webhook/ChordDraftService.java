@@ -93,12 +93,9 @@ public class ChordDraftService {
                 tablaturas ni explicaciones ajenas a la hoja de ensayo.
                 No has escuchado el audio: no afirmes conocer el tono o arreglo del cover del link.
                 Busca coincidencia de titulo y artista. No sustituyas por otra cancion de titulo parecido,
-                otra traduccion o un tema del mismo artista. Ante duda, identityMatch=false; no adivines.
-                Devuelve tambien source (indice de la unica pagina elegida), identityMatch (boolean)
-                y complete (boolean). complete=true SOLO si la pagina contiene la hoja completa Y
-                has conservado todas sus estrofas, coros, puentes, intros, finales y repeticiones presentes.
-                Si solo hay un extracto, contenido bloqueado, resumen o faltan bloques, complete=false.
-                No declares completa una hoja solo porque hayas terminado de generar JSON.
+                otra traduccion o un tema del mismo artista. Ante duda, no inventes contenido.
+                Conserva todas las estrofas, coros, puentes, intros, finales y repeticiones presentes.
+                No inventes bloques ausentes. No necesitas emitir campos de validacion ni certificaciones.
                 Devuelve JSON con reference (titulo/artista/version de referencia, maximo 160 caracteres),
                 key (C, Db, Dm, etc., o vacio si no se indica explicitamente), keySource (indice 1-based,
                 0 si key vacio), sections (objetos {name,lines,source}). name identifica la seccion,
@@ -133,20 +130,24 @@ public class ChordDraftService {
     }
 
     Draft parseResearch(String text, List<Source> sources) throws IOException {
-        String payload = text.strip().replaceFirst("^```(?:json)?\\s*", "").replaceFirst("\\s*```$", "");
-        var result = json.readTree(payload);
-        if (result == null || !result.path("identityMatch").isBoolean() || !result.path("identityMatch").booleanValue())
-            throw new IOException("No pude confirmar que la pagina sea de esa cancion y version. Indica el artista y la version o comparte su pagina de acordes");
-        if (!result.path("complete").isBoolean() || !result.path("complete").booleanValue())
-            throw new IOException("La fuente o la hoja generada esta incompleta; faltan bloques. Comparte una pagina con la letra y acordes completos");
-        var sourceNode = result.path("source");
-        int selected = sourceNode.asInt(0);
-        if (!sourceNode.isIntegralNumber() || selected < 1 || selected > sources.size())
-            throw new IOException("La respuesta no identifica una pagina de acordes valida");
-        var draft = parse(payload, sources);
-        if (draft.sections().stream().anyMatch(section -> section.source() != selected))
-            throw new IOException("La respuesta mezclo paginas; necesito una sola hoja de la version solicitada");
-        return draft;
+        return parse(text, sources);
+    }
+
+    private static int sourceIndex(com.fasterxml.jackson.databind.JsonNode node, List<Source> sources) {
+        if (node.isObject()) {
+            int index = sourceIndex(node.path("url"), sources);
+            return index != 0 ? index : sourceIndex(node.path("index"), sources);
+        }
+        String value = node.asText("").strip();
+        for (int i = 0; i < sources.size(); i++)
+            if (sources.get(i).url().equals(value)) return i + 1;
+        if (value.matches("\\[?[0-9]+\\]?")) {
+            try {
+                int index = Integer.parseInt(value.replace("[", "").replace("]", ""));
+                if (index > 0 && index <= sources.size()) return index;
+            } catch (NumberFormatException ignored) { }
+        }
+        return 0; // Unknown reference is not a reason to discard usable chart content.
     }
 
     List<Source> search(String song) throws Exception {
@@ -202,8 +203,9 @@ public class ChordDraftService {
         var parsed = new ArrayList<Section>();
         for (var section : sections) {
             if (!section.isObject()) throw new IOException("La respuesta contiene una seccion ilegible");
-            int source = section.path("source").asInt(0);
-            if (source < 1 || source > sources.size()) source = 0;
+            int source = sourceIndex(section.path("source"), sources);
+            if (source == 0) source = sourceIndex(value.path("source"), sources);
+            if (source == 0 && sources.size() == 1) source = 1;
             var chords = section.path("chords");
             var symbols = new ArrayList<String>();
             var lines = new ArrayList<ChartLine>();
@@ -288,6 +290,7 @@ public class ChordDraftService {
             for (int source : cited) {
                 line(doc, "Fuente: " + draft.sources().get(source - 1).url());
             }
+            if (cited.isEmpty()) line(doc, "Fuente especifica no indicada en la respuesta; revisa la procedencia del borrador.");
             doc.write(out);
             return new Document(out.toByteArray(), finalKey, transpose);
         }

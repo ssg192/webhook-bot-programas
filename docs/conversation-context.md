@@ -69,13 +69,15 @@ Responder `no` no hace búsquedas ni genera documentos. Tras aceptar (`si`), pre
 el tono (`original`, `en Re`, `F#m`, etc.) ANTES de buscar. La búsqueda y el pedido a
 la IA incluyen ese tono. Con el resultado crea directamente en Notas/
 un `BORRADOR - ... .docx` con letra/acordes intercalados, estructura disponible y fuente.
-La investigación requiere una única fuente y declaraciones explícitas de identidad
-y completitud de la IA. Ante ambigüedad o contenido incompleto, pide artista/versión
-o una página completa y no sube un documento. No comprueba musicalmente los
+Se pide conservar el contenido de una sola página, sin requerir campos internos de
+identidad/completitud para crear el archivo. Las referencias aceptan número, cadena
+numérica, URL conocida u objeto con URL/índice, tanto en la raíz como por sección.
+Una referencia ausente no bloquea el contenido: no se inventa un enlace y el DOCX
+avisa si no se pudo identificar la fuente concreta. No comprueba musicalmente los
 acordes ni exige coincidencia literal con el texto recuperado. Se acepta la propuesta de la IA como
 borrador; el DOCX advierte que los acordes no se verificaron contra las fuentes ni
-contra el audio. Las declaraciones de la IA no son una garantía independiente de
-identidad o completitud: el documento sigue requiriendo revisión. Se conservan los
+contra el audio. No hay garantía independiente de identidad o completitud:
+el documento sigue requiriendo revisión. Se conservan los
 controles de cuota, permisos, cancelación y archivos existentes.
 El prompt pide conservar letra y acordes de una misma página con reproducción permitida,
 sin cruzar con el histórico ni completar letras ausentes. No incluye tablaturas. No escucha audio ni verifica
