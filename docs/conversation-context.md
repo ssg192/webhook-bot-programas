@@ -65,6 +65,22 @@ automáticas. Los límites 432/433 del proveedor pausan hasta el mes siguiente, 
 pausa 15 minutos. Al agotarse la cuota se avisa y no se sube un documento vacío.
 
 Cuando falten notas, primero pregunta si se quiere buscar una versión base en internet.
+Las consultas «cuántas canciones llevamos» muestran el total de la playlist; «cuántas
+tienen notas» incluyen el conteo de notas asociadas verificadas en Drive.
+Antes de interpretar mensajes se listan Notas/ y los documentos de la carpeta de
+la fecha, con paginación y sin papelera, incluyendo archivos manuales. Las asociaciones
+usan IDs conocidos de esa carpeta o coincidencias inequívocas del título normalizado
+al comienzo del nombre. `driveActual.notasSinAsociar` conserva archivos ambiguos;
+no se afirma que falten notas ni se crean duplicados ante esas dudas. Los documentos
+se conocen por nombre/ID: no se afirma haber leído sus letras o tonalidad.
+Si falla Drive, el estado es desconocido y no se crean notas a ciegas. Cada consulta
+reemplaza el inventario anterior, también tras borrados. Descubrir archivos manuales
+no los registra como objetivos de eliminación.
+«A las demás créales notas» usa la petición general: omite copias presentes y menús
+pendientes, informa de decisiones conservadas y no revoca rechazos implícitamente.
+Si todas tienen copias verificadas, responde que no hace falta crear más. Consultar
+la lista no cancela el menú activo. No es un chat libre sin límites: las respuestas
+de estado siguen basadas en hechos observados y acciones soportadas.
 Las decisiones `accepted`/`declined` se guardan en `dailyNoteDecisions` por usuario,
 canción y carpeta hasta terminar el día en America/Mexico_City; sobreviven reinicios
 con el almacén persistente configurado y se incluyen en el contexto de conversación.

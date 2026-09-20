@@ -173,6 +173,21 @@ public class DriveService {
         return !Boolean.TRUE.equals(file.getTrashed()) && file.getParents() != null && file.getParents().contains(folder);
     }
 
+    /** Inventario directo y paginado; incluye archivos manuales, nunca papelera. */
+    public List<File> listFolderFiles(String folder) throws Exception {
+        var files = new ArrayList<File>();
+        String token = null;
+        do {
+            var page = drive.files().list().setQ("'%s' in parents and trashed = false".formatted(escape(folder)))
+                    .setFields("nextPageToken,files(id,name,mimeType,webViewLink)")
+                    .setPageSize(1000).setPageToken(token).setOrderBy("name")
+                    .setSupportsAllDrives(true).setIncludeItemsFromAllDrives(true).execute();
+            files.addAll(page.getFiles());
+            token = page.getNextPageToken();
+        } while (token != null);
+        return List.copyOf(files);
+    }
+
     /** Solo una copia identificada en Notas; nunca un audio ni el archivo del historico. */
     public void trashNoteCopy(String fileId, String notesFolder) throws Exception {
         File file = drive.files().get(fileId).setSupportsAllDrives(true)

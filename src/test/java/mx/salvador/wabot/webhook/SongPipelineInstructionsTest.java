@@ -176,6 +176,7 @@ class SongPipelineInstructionsTest {
         }
         @Override public List<AudioFile> listAudioFiles(String parentId) { return List.copyOf(songs); }
         @Override public List<String> listMp3Names(String parentId) { return songs.stream().map(AudioFile::name).toList(); }
+        @Override public List<com.google.api.services.drive.model.File> listFolderFiles(String folder) { return List.of(); }
         @Override public File findFile(String name, String parentId) { return null; }
         @Override public List<String> trashVariants(String parentId, String baseName, String exceptName) { return List.of(); }
     }

@@ -33,6 +33,7 @@ class SongPipelineDraftTest {
         pipeline.generarNotas("sender", null);
         assertNull(pipeline.pendingDraftChoice("sender"));
         assertTrue(messages.stream().noneMatch(s -> s.contains("¿Quieres buscar")));
+        assertTrue(messages.stream().anyMatch(s -> s.contains("antes pediste no crear notas")));
         assertEquals(0, drafts.calls);
         pipeline.generarNotas("sender", "Tema.m4a");
         assertNotNull(pipeline.pendingDraftChoice("sender"));
@@ -46,6 +47,37 @@ class SongPipelineDraftTest {
         assertEquals(0, drive.uploads);
         assertNull(pipeline.pendingDraftChoice("sender"));
         drive.present = false;
+        pipeline.generarNotas("sender", null);
+        assertNotNull(pipeline.pendingDraftChoice("sender"));
+    }
+
+    @Test void generalRequestOnlyOffersRemainingSongsAndReportsAllDone() {
+        drive.songs = List.of("Tema.m4a", "Otra.m4a");
+        drive.present = true;
+        pipeline.workState.copied("Tema", "one", "Tema.pdf", "notes");
+        pipeline.generarNotas("sender", null);
+        assertEquals("Otra", pipeline.pendingDraftChoice("sender").song());
+        pipeline.cancelNoteChoice("sender");
+        pipeline.workState.copied("Otra", "two", "Otra.pdf", "notes");
+        messages.clear();
+        pipeline.generarNotas("sender", null);
+        assertNull(pipeline.pendingDraftChoice("sender"));
+        assertTrue(messages.stream().anyMatch(s -> s.contains("Las 2 canciones ya tienen notas")));
+        assertEquals(0, drive.uploads);
+        assertEquals(0, drafts.calls);
+    }
+
+    @Test void manualNotesAreRefreshedAndPreventDuplicateCreation() {
+        var folder = drive.ensureSundayStructure(LocalDate.now());
+        drive.manual = List.of(new File().setId("manual").setName("Tema.pdf").setMimeType("application/pdf"));
+        pipeline.refreshDriveContext("sender", drive.songs, folder);
+        assertEquals(1L, pipeline.context("sender", drive.songs).get("conNotasConfirmadas"));
+        pipeline.generarNotas("sender", null);
+        assertNull(pipeline.pendingDraftChoice("sender"));
+        assertEquals(0, drafts.calls);
+        drive.manual = List.of();
+        pipeline.refreshDriveContext("sender", drive.songs, folder);
+        assertEquals(0L, pipeline.context("sender", drive.songs).get("conNotasConfirmadas"));
         pipeline.generarNotas("sender", null);
         assertNotNull(pipeline.pendingDraftChoice("sender"));
     }
@@ -205,9 +237,12 @@ class SongPipelineDraftTest {
     }
     private static class FakeDrive extends DriveService {
         int uploads; String destination, name; File existing; boolean present;
+        List<String> songs = List.of("Tema.m4a");
+        List<File> manual = List.of();
+        @Override public List<File> listFolderFiles(String folder) { return folder.equals("notes") ? manual : List.of(); }
         @Override public boolean noteCopyPresent(String id, String folder) { return present; }
         @Override public EstructuraDomingo ensureSundayStructure(LocalDate date) { return new EstructuraDomingo("playlist", "notes", "sunday", "folder-link"); }
-        @Override public List<String> listMp3Names(String folder) { return List.of("Tema.m4a"); }
+        @Override public List<String> listMp3Names(String folder) { return songs; }
         @Override public File findFile(String name, String folder) { return existing; }
         @Override public File copyTo(String id, String name, String folder) { return new File().setId("copied-id"); }
         @Override public File uploadBytes(String name, byte[] bytes, String mime, String folder) {

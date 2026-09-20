@@ -133,6 +133,11 @@ public class GeminiSongInterpreter {
                 o vacio si no solicito tonalidad. No infieras el tono absoluto de un audio a partir de (+2).
                 Para otros intents omite targetKey o usa vacio. Si no se identifica cual cancion, clarify.
                 contexto.estadoTrabajo contiene hechos sobre canciones, notas, letras y descargas pendientes.
+                driveActual es el inventario consultado de la fecha activa: incluye archivos manuales,
+                notas, asociacionesNotas, notasSinAsociar y documentos. Tiene prioridad sobre mensajes
+                antiguos para saber que archivos existen. No presupongas el contenido de un documento
+                por su nombre. Si hay notasSinAsociar, pide identificar la cancion, no inventes asociaciones.
+                Si hay errorNotas/errorDocumentos, reconoce que no se pudo verificar esa parte.
                 estadoTrabajo.conversacion incluye mensajes del usuario Y respuestas recientes del bot,
                 con roles. Usalos para resolver referencias al documento que el bot entrego o a su pregunta.
                 Una correccion como 'al docx', 'no, al documento de letras' sustituye el destino de
@@ -145,6 +150,13 @@ public class GeminiSongInterpreter {
                 cuando el usuario esta corrigiendo el destino hacia el documento de letras.
                 Una CONSULTA de estado NO es una orden de crear ni copiar archivos.
                 'la de Ingrid ya subiste las notas?', 'estan las notas de esa?' => status_notes.
+                'cuantas canciones llevamos?', 'cuales tenemos?' => list, song=0, semitones=0.
+                'cuantas tienen notas?', 'a cuales les faltan notas?' => status_notes, song=0, semitones=0.
+                'a las demas creales las notas', 'completa las que faltan' tras consultar notas => notes,
+                song=0, semitones=0. El backend omite las notas existentes y conserva rechazos previos.
+                No conviertas 'las demas' en la ultima cancion seleccionada ni en una orden de cambiar tono.
+                totalCanciones y conNotasConfirmadas son conteos del estado; unknown en notasVerificadas
+                significa desconocido, no ausencia demostrada. Las consultas no reinician menus pendientes.
                 'ya esta la letra?', 'terminaste el documento?' => status_lyrics.
                 'que falta?', 'como vas?', 'que tienes?' => status.
                 Estos intents llevan semitones=0; song es la cancion consultada o 0 para estado general.

@@ -270,6 +270,7 @@ public class PlaylistToneFlow {
             var noteChoice = uploadedIds == null ? pipeline.pendingNoteChoice(from) : null;
             var draftChoice = uploadedIds == null ? pipeline.pendingDraftChoice(from) : null;
             var names = songs.stream().map(AudioFile::name).toList();
+            pipeline.refreshDriveContext(from, names, folder);
             var result = interpreter.interpret(body, names, selected, history(from),
                     noteChoice != null ? "note_version" : uploadedIds == null ? previous.action() : "after_upload",
                     noteChoice, pipeline.context(from, names));
@@ -277,8 +278,6 @@ public class PlaylistToneFlow {
                 // Consulta sin efectos sobre archivos ni preguntas pendientes. No espera al indice de letras.
                 rememberMessage(from, body);
                 if (result.song() > 0) rememberSong(from, songs.get(result.song() - 1).id());
-                if (!result.intent().equals("status_lyrics")) pipeline.verifyNotes(
-                        result.song() == 0 ? names : List.of(names.get(result.song() - 1)), folder.notasId());
                 whatsApp.replyText(from, MusicWorkState.describe(pipeline.context(from, names), result.intent(), result.song()));
                 return;
             }
@@ -362,10 +361,9 @@ public class PlaylistToneFlow {
                 return;
             }
             if (result.intent().equals("list")) {
-                if (!pending.remove(from, previous)) return;
                 // Mostrar estado actual aunque la conversacion anterior tuviera un menu viejo.
                 List<AudioFile> current = drive.listAudioFiles(folder.playlistId());
-                var list = new StringBuilder("Canciones en la playlist:\n");
+                var list = new StringBuilder("Llevamos " + current.size() + " canciones en la playlist:\n");
                 for (int i = 0; i < current.size(); i++) list.append(i + 1).append(". ").append(current.get(i).name()).append('\n');
                 list.append('\n').append(folder.link());
                 whatsApp.replyText(from, list.toString());

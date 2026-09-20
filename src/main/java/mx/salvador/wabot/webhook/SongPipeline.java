@@ -53,6 +53,47 @@ public class SongPipeline {
     private final Map<String, List<DraftChoice>> draftChoices = new ConcurrentHashMap<>();
     record DailyNoteDecision(String song, String folder, java.time.LocalDate day, String decision) {}
     private final Map<String, List<DailyNoteDecision>> dailyNoteDecisions = new ConcurrentHashMap<>();
+    private record DriveContext(java.time.LocalDate sunday, Map<String, Object> data) {}
+    private final Map<String, DriveContext> driveContexts = new ConcurrentHashMap<>();
+
+    void refreshDriveContext(String from, List<String> songs, DriveService.EstructuraDomingo folder) {
+        if (driveService == null) return;
+        var data = new LinkedHashMap<String, Object>();
+        data.put("fecha", Fechas.proximoDomingo().toString());
+        data.put("consultado", java.time.Instant.now().toString());
+        data.put("playlist", List.copyOf(songs));
+        try {
+            var files = driveService.listFolderFiles(folder.notasId());
+            var result = DriveNoteInventory.match(songs, files, workState, folder.notasId());
+            data.put("notas", files.stream().filter(DriveNoteInventory::document)
+                    .map(file -> Map.of("id", file.getId(), "nombre", file.getName())).toList());
+            data.put("notasSinAsociar", result.unassigned());
+            data.put("asociacionesNotas", result.matches());
+            for (String song : songs) {
+                var names = result.matches().get(song);
+                if (!names.isEmpty()) {
+                    workState.verifiedNotes(song, true);
+                    workState.note(song, "En Notas/: " + String.join(", ", names));
+                } else if (result.ambiguous().contains(song) || !result.unassigned().isEmpty()) {
+                    workState.verifiedNotes(song, null);
+                    workState.note(song, "Hay archivos en Notas/ sin asociacion segura; necesito identificar a que cancion corresponden");
+                } else {
+                    workState.verifiedNotes(song, false);
+                    workState.note(song, "No hay notas asociadas en la carpeta actual de Drive");
+                }
+            }
+            data.put("notasConsultadas", true);
+        } catch (Exception e) {
+            songs.forEach(song -> workState.verifiedNotes(song, null));
+            data.put("notasConsultadas", false);
+            data.put("errorNotas", "No pude consultar Notas/; no asumir que faltan archivos");
+        }
+        try {
+            data.put("documentos", driveService.listFolderFiles(folder.domingoId()).stream()
+                    .filter(DriveNoteInventory::document).map(file -> Map.of("id", file.getId(), "nombre", file.getName())).toList());
+        } catch (Exception e) { data.put("errorDocumentos", "No pude consultar los documentos de la fecha"); }
+        driveContexts.put(from, new DriveContext(Fechas.proximoDomingo(), Map.copyOf(data)));
+    }
     java.time.LocalDate noteDecisionDay() { return java.time.LocalDate.now(java.time.ZoneId.of("America/Mexico_City")); }
     private void rememberNoteDecision(String from, String song, String folder, String decision) {
         dailyNoteDecisions.compute(from, (sender, saved) -> {
@@ -205,6 +246,8 @@ public class SongPipeline {
             Map<String, Object> state = new LinkedHashMap<>(workState.snapshot(songs, count == null ? 0 : count.get()));
             state.put("peticionesDocumentosEnEspera", afterDownloads.getOrDefault(from, List.of()).size());
             state.put("conversacion", whatsApp == null ? List.of() : whatsApp.conversation(from));
+            var inventory = driveContexts.get(from);
+            if (inventory != null && inventory.sunday().equals(Fechas.proximoDomingo())) state.put("driveActual", inventory.data());
             state.put("decisionesNotasHoy", dailyNoteDecisions.getOrDefault(from, List.of()).stream()
                     .filter(entry -> entry.day().equals(noteDecisionDay())).toList());
             var draftChoice = pendingDraftChoice(from);
@@ -224,7 +267,7 @@ public class SongPipeline {
         if (driveService == null) return;
         for (String song : songs) {
             var copies = workState.copies(song);
-            if (copies.isEmpty()) continue;
+            if (copies.isEmpty()) { workState.verifiedNotes(song, null); continue; }
             try {
                 var present = new ArrayList<String>();
                 for (var copy : copies) {
@@ -232,7 +275,11 @@ public class SongPipeline {
                 }
                 workState.note(song, present.isEmpty() ? "Las copias registradas ya no estan en Notas/"
                         : "En Notas/: " + String.join(", ", present));
-            } catch (Exception e) { workState.note(song, "No pude verificar las copias en Drive ahora; resultado sin confirmar"); }
+                workState.verifiedNotes(song, !present.isEmpty());
+            } catch (Exception e) {
+                workState.verifiedNotes(song, null);
+                workState.note(song, "No pude verificar las copias en Drive ahora; resultado sin confirmar");
+            }
         }
     }
 
@@ -559,6 +606,7 @@ public class SongPipeline {
                 whatsApp.replyText(from, "Aun no hay canciones en la playlist de " + carpeta + ".");
                 return;
             }
+
             List<TitleCleaner.Titulo> titulos = mp3s.stream().map(TitleCleaner::clean).toList();
             mp3s.forEach(song -> workState.lyric(song, "En preparacion"));
 
@@ -638,8 +686,16 @@ public class SongPipeline {
                 return;
             }
 
+            refreshDriveContext(from, driveService.listMp3Names(estructura.playlistId()), estructura);
+            var inventory = driveContexts.get(from);
+            if (inventory != null && !Boolean.TRUE.equals(inventory.data().get("notasConsultadas"))) {
+                whatsApp.replyText(from, "No pude consultar Notas/ en Drive. No creare duplicados; intenta de nuevo en unos momentos.");
+                return;
+            }
             List<String> copiadas = new ArrayList<>();
             int omitted = 0;
+            int existingNotes = 0;
+            var preservedDecisions = new ArrayList<String>();
             List<String> sinNotas = new ArrayList<>();
             List<NoteChoice> elecciones = new ArrayList<>();
             var refs = lyricsHistory.refs(mp3s.stream()
@@ -648,6 +704,8 @@ public class SongPipeline {
             for (String mp3 : mp3s) {
                 String nombre = TitleCleaner.clean(mp3).nombre();
                 boolean present = false;
+                if (inventory != null && inventory.data().get("asociacionesNotas") instanceof Map<?, ?> associations
+                        && associations.get(mp3) instanceof List<?> matched) present = !matched.isEmpty();
                 for (var copy : workState.copies(nombre)) {
                     if (copy.folder().equals(estructura.notasId()) && driveService.noteCopyPresent(copy.id(), copy.folder())) { present = true; break; }
                 }
@@ -658,6 +716,18 @@ public class SongPipeline {
                 if (pendingNotes != null && pendingNotes.expires().isAfter(java.time.Instant.now()) && pendingNotes.sunday().equals(domingo))
                     pending |= pendingNotes.choices().stream().anyMatch(item -> item.song().equals(nombre));
                 if (present || pending || (selectedSong == null && hasNoteDecision(from, nombre, estructura.notasId()))) {
+                    if (present) existingNotes++;
+                    else if (!pending) {
+                        var decision = dailyNoteDecisions.getOrDefault(from, List.of()).stream()
+                                .filter(entry -> entry.day().equals(noteDecisionDay()) && entry.folder().equals(estructura.notasId()) && entry.song().equals(MusicWorkState.key(nombre)))
+                                .findFirst();
+                        preservedDecisions.add(nombre + (decision.isPresent() && decision.get().decision().equals("declined")
+                                ? ": antes pediste no crear notas" : ": ya atendimos la peticion de hoy; puedes pedir reintentar esta cancion"));
+                    }
+                    omitted++; continue;
+                }
+                if (inventory != null && inventory.data().get("notasSinAsociar") instanceof List<?> unknown && !unknown.isEmpty()) {
+                    preservedDecisions.add(nombre + ": hay archivos sin asociar en Notas/ (" + String.join(", ", unknown.stream().map(Object::toString).toList()) + "); dime a que cancion corresponden antes de crear mas");
                     omitted++; continue;
                 }
                 requestedSongs.add(mp3);
@@ -708,7 +778,13 @@ public class SongPipeline {
                 if (chordDrafts != null && chordDrafts.available()) sb.append("Puedo buscar una version base si lo autorizas.\n");
                 else sb.append("La busqueda web no esta configurada; no generare notas sin fuentes.\n");
             }
-            if (sb.isEmpty() && omitted > 0) sb.append("No hay nuevas notas pendientes. Conservo las notas existentes y tus decisiones de hoy; si quieres cambiar alguna, dime la cancion.");
+            if (existingNotes == mp3s.size()) sb.append("Las ").append(existingNotes).append(" canciones ya tienen notas en Drive; no hace falta crear mas.");
+            if (!preservedDecisions.isEmpty()) {
+                sb.append("\nConservo tus decisiones:\n");
+                preservedDecisions.forEach(item -> sb.append("• ").append(item).append('\n'));
+                sb.append("Si ahora quieres las de alguna, dime cual.");
+            }
+            if (sb.isEmpty() && omitted > 0) sb.append("Las peticiones de notas siguen pendientes; conservo tus elecciones sin reiniciar el menu.");
             whatsApp.replyText(from, sb.toString());
             if (chordDrafts != null && chordDrafts.available()) {
                 for (String song : sinNotas) createNoteDraft(from, song, "", estructura);

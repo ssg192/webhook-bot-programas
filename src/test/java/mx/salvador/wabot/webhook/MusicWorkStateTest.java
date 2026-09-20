@@ -11,6 +11,20 @@ import mx.salvador.wabot.whatsapp.WhatsAppService;
 import static org.junit.jupiter.api.Assertions.*;
 
 class MusicWorkStateTest {
+    @Test void countsOnlyCurrentPlaylistAndDistinguishesUnknownNotes() {
+        var state = new MusicWorkState();
+        state.verifiedNotes("Uno", true);
+        state.verifiedNotes("Fuera de playlist", true);
+        var snapshot = state.snapshot(List.of("Uno.m4a", "Dos.m4a"), 0);
+        assertEquals(2, snapshot.get("totalCanciones"));
+        assertEquals(1L, snapshot.get("conNotasConfirmadas"));
+        assertEquals(1L, snapshot.get("notasSinVerificar"));
+        assertTrue(MusicWorkState.describe(snapshot, "status_notes", 0).contains("1 tienen notas confirmadas"));
+        state.verifiedNotes("Dos", true);
+        assertTrue(MusicWorkState.describe(state.snapshot(List.of("Uno", "Dos"), 0), "status_notes", 0).contains("Todas tienen notas"));
+        state.verifiedNotes("Dos", null);
+        assertEquals(1L, state.snapshot(List.of("Uno", "Dos"), 0).get("conNotasConfirmadas"));
+    }
     @Test
     void unknownIsNotReportedAsMissingAndSnapshotsAreImmutable() {
         var state = new MusicWorkState();
