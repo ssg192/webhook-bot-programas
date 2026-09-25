@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
 import java.io.IOException;
 import java.net.URI;
@@ -19,6 +20,9 @@ import java.util.Optional;
 /** Interpreta texto; nunca recibe IDs de Drive ni ejecuta operaciones sobre archivos. */
 @ApplicationScoped
 public class GeminiSongInterpreter {
+    private static final Logger LOG = Logger.getLogger(GeminiSongInterpreter.class);
+    private static final int MAX_RETRIES = 3;
+
     @Inject ObjectMapper json;
     @ConfigProperty(name = "bot.gemini.enabled", defaultValue = "false")
     boolean enabled;
@@ -57,6 +61,7 @@ public class GeminiSongInterpreter {
             case 401, 403 -> "Gemini rechazo el acceso. Hay que revisar la API key y los permisos del proyecto.";
             case 400 -> "Gemini rechazo la solicitud. Hay que revisar la configuracion de la clave y el formato enviado.";
             case 404 -> "Gemini no encontro el recurso solicitado. Hay que revisar el modelo configurado.";
+            case 503 -> "Gemini no esta disponible temporalmente. Se reintento sin exito; intentalo de nuevo en unos momentos.";
             default -> "No pude comunicarme correctamente con Gemini. Intentalo de nuevo en unos momentos.";
         };
         return new Failure("GEMINI_HTTP_" + status, message + " (HTTP " + status + ")");
@@ -365,9 +370,17 @@ public class GeminiSongInterpreter {
                 .header("x-goog-api-key", apiKey.orElseThrow())
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body)).build();
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-        // Sin reintentos ni proveedores alternos de pago al agotar la cuota.
-        if (response.statusCode() != 200) throw httpFailure(response.statusCode());
-        return response.body();
+        // Reintenta solo fallas temporales (503); los 4xx son errores del cliente y no se reintentan.
+        long delayMillis = 1000;
+        for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) return response.body();
+            if (response.statusCode() != 503 || attempt == MAX_RETRIES) throw httpFailure(response.statusCode());
+            LOG.warnf("Gemini respondio 503; reintentando (intento %d de %d)", attempt, MAX_RETRIES);
+            Thread.sleep(delayMillis);
+            delayMillis *= 2;
+        }
+        // Inalcanzable: el bucle siempre retorna o lanza en la ultima iteracion.
+        throw httpFailure(503);
     }
 }
