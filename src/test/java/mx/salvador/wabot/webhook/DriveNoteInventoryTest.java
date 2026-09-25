@@ -24,4 +24,18 @@ class DriveNoteInventoryTest {
         assertTrue(result.matches().get("Otra.m4a").isEmpty());
         assertEquals(List.of("Tema especial.pdf"), result.unassigned());
     }
+
+    @Test void matchesTitleWithoutArtistOnEitherSideAndPreservesVersionAmbiguity() {
+        var songs = List.of("El Dios que Adoramos - Gracia Soberana.m4a", "Artista - Otra cancion.m4a");
+        var files = List.of(pdf("one", "El Dios que Adoramos.pdf"), pdf("two", "Otra canción.pdf"));
+        var result = DriveNoteInventory.match(songs, files, new MusicWorkState(), "today");
+        assertEquals(List.of("El Dios que Adoramos.pdf"), result.matches().get(songs.get(0)));
+        assertEquals(List.of("Otra canción.pdf"), result.matches().get(songs.get(1)));
+        assertTrue(result.unassigned().isEmpty());
+
+        var versions = List.of("Tema - Artista uno.m4a", "Tema - Artista dos.m4a");
+        var ambiguous = DriveNoteInventory.match(versions, List.of(pdf("three", "Tema.pdf")), new MusicWorkState(), "today");
+        assertEquals(java.util.Set.copyOf(versions), ambiguous.ambiguous());
+        assertTrue(ambiguous.matches().values().stream().allMatch(List::isEmpty));
+    }
 }

@@ -128,6 +128,33 @@ class SongPipelineDraftTest {
         assertTrue(messages.stream().noneMatch(s -> s.contains("¿Quieres buscar") || s.contains("Sin notas en el historico")));
     }
 
+    @Test void screenshotScenarioRecognizesExistingPdfAndOffersMissingSong() {
+        drive.songs = List.of("No Puedo Parar.m4a", "El Dios que Adoramos - Gracia Soberana.m4a");
+        drive.manual = List.of(DriveNoteInventoryTest.pdf("manual", "El Dios que Adoramos.pdf"));
+        pipeline.generarNotas("sender", null);
+        assertEquals("No Puedo Parar", pipeline.pendingDraftChoice("sender").song());
+        assertEquals(1L, pipeline.context("sender", drive.songs).get("conNotasConfirmadas"));
+        assertFalse(messages.stream().anyMatch(s -> s.contains("Conservo tus decisiones")));
+    }
+
+    @Test void unrelatedUnassignedPdfDoesNotBlockExplicitRequest() {
+        drive.manual = List.of(DriveNoteInventoryTest.pdf("manual", "Archivo desconocido.pdf"));
+        pipeline.generarNotas("sender", "Tema.m4a");
+        assertEquals("Tema", pipeline.pendingDraftChoice("sender").song());
+        assertTrue(pipeline.workState.copies("Tema").isEmpty());
+    }
+
+    @Test void ambiguousPdfOnlyBlocksItsCandidateSongs() {
+        drive.songs = List.of("Tema.m4a", "Tema especial.m4a", "Otra.m4a");
+        drive.manual = List.of(DriveNoteInventoryTest.pdf("manual", "Tema especial.pdf"));
+        pipeline.generarNotas("sender", null);
+        assertEquals("Otra", pipeline.pendingDraftChoice("sender").song());
+        assertTrue(messages.stream().anyMatch(s -> s.contains("coinciden con varias canciones")));
+        assertFalse(messages.stream().anyMatch(s -> s.contains("Conservo tus decisiones")));
+        assertTrue(pipeline.workState.copies("Tema").isEmpty());
+        assertTrue(pipeline.workState.copies("Tema especial").isEmpty());
+    }
+
     @Test void dailyDecisionSurvivesRestartAndIsScopedToSender(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) {
         var store = new ContextStore();
         store.json = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();

@@ -19,8 +19,13 @@ final class DriveNoteInventory {
             if (candidates.isEmpty()) {
                 String name = normalized(file.getName()).replaceFirst("^borrador(?: de acordes)? +", "");
                 candidates = songs.stream().filter(song -> {
-                    String title = normalized(MusicWorkState.key(song));
-                    return !title.isBlank() && (name.equals(title) || name.startsWith(title + " "));
+                    String title = MusicWorkState.key(song);
+                    // Audio titles can contain either "song - artist" or "artist - song".
+                    // Keep all candidates so shared titles remain ambiguous.
+                    return Arrays.stream(title.split("\\s+[-–—|]\\s+"))
+                            .map(DriveNoteInventory::normalized)
+                            .anyMatch(part -> !part.isBlank() && name.equals(part))
+                            || name.equals(normalized(title)) || name.startsWith(normalized(title) + " ");
                 }).toList();
             }
             if (candidates.size() == 1) matches.get(candidates.get(0)).add(file.getName());

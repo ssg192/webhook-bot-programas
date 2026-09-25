@@ -111,13 +111,14 @@ public class SongPipeline {
             data.put("notas", files.stream().filter(DriveNoteInventory::document)
                     .map(file -> Map.of("id", file.getId(), "nombre", file.getName())).toList());
             data.put("notasSinAsociar", result.unassigned());
+            data.put("cancionesConNotasAmbiguas", List.copyOf(result.ambiguous()));
             data.put("asociacionesNotas", result.matches());
             for (String song : songs) {
                 var names = result.matches().get(song);
                 if (!names.isEmpty()) {
                     workState.verifiedNotes(song, true);
                     workState.note(song, "En Notas/: " + String.join(", ", names));
-                } else if (result.ambiguous().contains(song) || !result.unassigned().isEmpty()) {
+                } else if (result.ambiguous().contains(song)) {
                     workState.verifiedNotes(song, null);
                     workState.note(song, "Hay archivos en Notas/ sin asociacion segura; necesito identificar a que cancion corresponden");
                 } else {
@@ -762,6 +763,7 @@ public class SongPipeline {
             int omitted = 0;
             int existingNotes = 0;
             var preservedDecisions = new ArrayList<String>();
+            var ambiguousNotes = new ArrayList<String>();
             List<String> sinNotas = new ArrayList<>();
             List<NoteChoice> elecciones = new ArrayList<>();
             var refs = lyricsHistory.refs(mp3s.stream()
@@ -792,8 +794,8 @@ public class SongPipeline {
                     }
                     omitted++; continue;
                 }
-                if (inventory != null && inventory.data().get("notasSinAsociar") instanceof List<?> unknown && !unknown.isEmpty()) {
-                    preservedDecisions.add(nombre + ": hay archivos sin asociar en Notas/ (" + String.join(", ", unknown.stream().map(Object::toString).toList()) + "); dime a que cancion corresponden antes de crear mas");
+                if (inventory != null && inventory.data().get("cancionesConNotasAmbiguas") instanceof List<?> ambiguous && ambiguous.contains(mp3)) {
+                    ambiguousNotes.add(nombre);
                     omitted++; continue;
                 }
                 requestedSongs.add(mp3);
@@ -845,6 +847,11 @@ public class SongPipeline {
                 else sb.append("La busqueda web no esta configurada; no generare notas sin fuentes.\n");
             }
             if (existingNotes == mp3s.size()) sb.append("Las ").append(existingNotes).append(" canciones ya tienen notas en Drive; no hace falta crear mas.");
+            if (!ambiguousNotes.isEmpty()) {
+                sb.append("\nNo pude identificar con seguridad las notas de: ")
+                        .append(String.join(", ", ambiguousNotes))
+                        .append(". Hay archivos que coinciden con varias canciones en Notas/. Revisa sus nombres para distinguir la cancion y el artista antes de volver a pedirlas.\n");
+            }
             if (!preservedDecisions.isEmpty()) {
                 sb.append("\nConservo tus decisiones:\n");
                 preservedDecisions.forEach(item -> sb.append("• ").append(item).append('\n'));
