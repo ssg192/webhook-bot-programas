@@ -10,6 +10,13 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ChordDraftServiceTest {
+    @Test void artistCandidatesDoNotBecomeADocumentAndMustReferenceRealSources() {
+        var choices = assertThrows(ChordDraftService.ArtistChoiceRequired.class, () -> service.parseResearch(
+                "{\"candidates\":[{\"reference\":\"Tema - Marco Barrientos\",\"source\":1},{\"reference\":\"Tema - Marco Otro\",\"source\":2}]}", sources));
+        assertEquals(2, choices.options.size());
+        assertEquals("Tema - Marco Barrientos", choices.options.get(0).reference());
+        assertThrows(IOException.class, () -> service.parseResearch("{\"candidates\":[{\"reference\":\"Inventado\",\"source\":99}]}", sources));
+    }
     @Test void extractsMissingPagesWithoutTrustingSnippetsOrUnexpectedUrls() throws Exception {
         var stub = new ChordDraftService() {
             @Override String searchExchange(String body) { return "{\"results\":[{\"url\":\"https://page.example/song\",\"title\":\"Tema\",\"content\":\"snippet\"}]}"; }

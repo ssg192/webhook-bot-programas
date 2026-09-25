@@ -51,6 +51,49 @@ public class SongPipeline {
     record DraftChoice(String song, String targetKey, DriveService.EstructuraDomingo folder,
                        java.time.LocalDate sunday, java.time.Instant expires, boolean authorized) {}
     private final Map<String, List<DraftChoice>> draftChoices = new ConcurrentHashMap<>();
+    private record ArtistQuestion(DraftChoice expected, String target, ChordDraftService.ArtistChoiceRequired choices) {}
+    private final Map<String, ArtistQuestion> artistQuestions = new ConcurrentHashMap<>();
+    private ArtistQuestion artistQuestion(String from) {
+        var question = artistQuestions.get(from);
+        if (question != null && pendingDraftChoice(from) == question.expected()) return question;
+        if (question != null) artistQuestions.remove(from, question);
+        return null;
+    }
+    Object artistQuestionToken(String from) { return artistQuestion(from); }
+    boolean artistSelectionMatches(String from, String body, int selected) {
+        var question = artistQuestion(from);
+        if (question == null || selected < 1 || selected > question.choices().options.size()) return false;
+        var tokens = java.text.Normalizer.normalize(body.toLowerCase(java.util.Locale.ROOT), java.text.Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "").split("[^a-z0-9]+");
+        int best = 0, winners = 0, winner = 0;
+        for (int i = 0; i < question.choices().options.size(); i++) {
+            String label = " " + java.text.Normalizer.normalize(question.choices().options.get(i).reference().toLowerCase(java.util.Locale.ROOT), java.text.Normalizer.Form.NFD)
+                    .replaceAll("\\p{M}", "").replaceAll("[^a-z0-9]+", " ") + " ";
+            int score = 0;
+            for (String token : new java.util.HashSet<>(java.util.Arrays.asList(tokens)))
+                if (token.length() >= 4 && !List.of("quiero", "dijiste", "primera", "primero", "segunda", "segundo", "otra", "otro", "cancion", "version").contains(token)
+                        && label.contains(" " + token + " ")) score++;
+            if (score > best) { best = score; winners = 1; winner = i + 1; }
+            else if (score == best && score > 0) winners++;
+        }
+        return best == 0 || (winners == 1 && winner == selected);
+    }
+    void switchArtistTask(String from, String song) {
+        var question = artistQuestion(from);
+        if (question != null && !MusicWorkState.key(song).equals(question.expected().song())) {
+            replaceDraftChoice(from, question.expected(), null);
+            artistQuestions.remove(from, question);
+        }
+    }
+    void repeatArtistQuestion(String from) {
+        var question = artistQuestion(from);
+        if (question == null) return;
+        var message = new StringBuilder("Encontre estas referencias para " + question.expected().song() + ":\n");
+        for (int i = 0; i < question.choices().options.size(); i++)
+            message.append(i + 1).append(". ").append(question.choices().options.get(i).reference()).append('\n');
+        message.append("¿Cual es la que buscas?");
+        whatsApp.replyText(from, message.toString());
+    }
     record DailyNoteDecision(String song, String folder, java.time.LocalDate day, String decision) {}
     private final Map<String, List<DailyNoteDecision>> dailyNoteDecisions = new ConcurrentHashMap<>();
     private record DriveContext(java.time.LocalDate sunday, Map<String, Object> data) {}
@@ -142,6 +185,7 @@ public class SongPipeline {
 
     private void nextDraftChoice(String from, DraftChoice choice) {
         if (replaceDraftChoice(from, choice, null)) {
+            artistQuestions.remove(from);
             var next = pendingDraftChoice(from);
             if (next != null) askDraftChoice(from, next);
         }
@@ -166,19 +210,28 @@ public class SongPipeline {
             return;
         }
         String task = from + ":" + expected.song();
+        var artist = artistQuestion(from);
+        int option = -1;
+        if (artist != null) {
+            try { option = Integer.parseInt(decision.replaceFirst("^artist:", "")) - 1; }
+            catch (NumberFormatException ignored) { }
+            if (!decision.startsWith("artist:") || option < 0 || option >= artist.choices().options.size()) { repeatArtistQuestion(from); return; }
+        }
         if (!draftsInProgress.add(task)) { whatsApp.replyText(from, "Sigo procesando esa peticion; te aviso al terminar."); return; }
         try {
             {
-                String target = decision.equals("original") ? "" : decision;
+                String target = artist != null ? artist.target() : decision.equals("original") ? "" : decision;
                 if (!target.isEmpty() && !mx.salvador.wabot.media.ChordTransposer.validKey(target)) { askDraftChoice(from, expected); return; }
                 String name = "BORRADOR - " + expected.song().replaceAll("[\\\\/:*?\"<>|]", " ")
+                        + (artist == null ? "" : " - " + artist.choices().options.get(option).reference().replaceAll("[\\\\/:*?\"<>|]", " "))
                         + (target.isEmpty() ? " - base web" : " - " + target) + ".docx";
                 var existing = driveService.findFile(name, expected.folder().notasId());
                 workState.note(expected.song(), "Buscando base web y preparando DOCX");
                 if (existing == null) whatsApp.replyText(from, "Buscando acordes de " + expected.song()
                         + (target.isEmpty() ? " en tono original" : " en " + target) + " y preparando el DOCX, te aviso...");
                 ChordDraftService.Document doc = existing == null
-                        ? chordDrafts.create(expected.song(), workState.reference(expected.song()), target) : null;
+                        ? (artist == null ? chordDrafts.create(expected.song(), workState.reference(expected.song()), target)
+                        : chordDrafts.createSelected(expected.song(), workState.reference(expected.song()), target, artist.choices(), option)) : null;
                 if (pendingDraftChoice(from) != expected) return;
                 var uploaded = existing != null ? existing : driveService.uploadBytes(name, doc.bytes(), DriveService.DOCX_MIME, expected.folder().notasId());
                 workState.copied(expected.song(), uploaded.getId(), name, expected.folder().notasId());
@@ -186,6 +239,11 @@ public class SongPipeline {
                 whatsApp.replyText(from, (existing != null ? "Conserve el DOCX existente y tus ediciones." : "Borrador de notas creado. Revisa los acordes y la tonalidad del DOCX antes de usarlo.") + "\n" + uploaded.getWebViewLink());
                 nextDraftChoice(from, expected);
             }
+        } catch (ChordDraftService.ArtistChoiceRequired e) {
+            if (pendingDraftChoice(from) != expected) return;
+            artistQuestions.put(from, new ArtistQuestion(expected, artist == null ? (decision.equals("original") ? "" : decision) : artist.target(), e));
+            workState.note(expected.song(), "Pendiente de aclarar artista/version; aun no se creo documento");
+            repeatArtistQuestion(from);
         } catch (Exception e) {
             if (pendingDraftChoice(from) != expected) return;
             String reason = e instanceof GeminiSongInterpreter.Failure failure ? failure.userMessage()
@@ -199,6 +257,8 @@ public class SongPipeline {
     }
 
     String draftDecision(String body, DraftChoice choice) {
+        // Artist/version choices require conversational interpretation, not tone shortcuts.
+        if (artistQuestions.values().stream().anyMatch(question -> question.expected() == choice)) return null;
         String text = body.strip().toLowerCase(java.util.Locale.ROOT).replaceAll("[.!¡¿?]+$", "").strip().replaceAll("\\s+", " ");
         if (text.matches("no|no gracias|no buscar|omitir")) return "decline";
         if (!choice.authorized() && text.matches("si|sí|si busca|sí busca|buscar|busca|buscar en la web")) return "search";
@@ -254,6 +314,11 @@ public class SongPipeline {
             if (draftChoice != null) state.put("preguntaBaseWeb", Map.of("cancion", draftChoice.song(),
                     "etapa", !draftChoice.authorized() ? "permiso_busqueda" : "elegir_tono",
                     "tonoSolicitado", draftChoice.targetKey()));
+            var artist = artistQuestion(from);
+            if (artist != null) state.put("eleccionArtistaWeb", Map.of("cancion", artist.expected().song(), "tono", artist.target(),
+                    "opciones", java.util.stream.IntStream.range(0, artist.choices().options.size()).mapToObj(i -> Map.of(
+                            "numero", i + 1, "referencia", artist.choices().options.get(i).reference(),
+                            "url", artist.choices().sources.get(artist.choices().options.get(i).source() - 1).url())).toList()));
             pendingNoteChoice(from); // Descarta menus vencidos antes de formar el contexto.
             var pending = versionesPendientes.get(from);
             state.put("preguntasNotasPendientes", pending == null ? List.of() : pending.choices().stream()
@@ -331,6 +396,7 @@ public class SongPipeline {
 
     void cancelNoteChoice(String from) {
         draftChoices.remove(from);
+        artistQuestions.remove(from);
         var pending = versionesPendientes.remove(from);
         persistNoteChoices();
         if (pending != null) pending.choices().forEach(choice -> workState.note(choice.song(), "Eleccion de version cancelada; no se confirmo la copia"));

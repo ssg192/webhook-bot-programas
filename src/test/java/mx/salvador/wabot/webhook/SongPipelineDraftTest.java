@@ -26,6 +26,42 @@ class SongPipelineDraftTest {
     }
     @AfterEach void close() { pipeline.shutdown(); }
 
+    @Test void ambiguousArtistsWaitAndKeepStableOptionsUntilSelection() {
+        drafts.ambiguous = true;
+        pipeline.generarNotas("sender", null);
+        pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "search");
+        pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "D");
+        assertEquals(0, drive.uploads);
+        assertTrue(messages.get(messages.size() - 1).contains("Marco Barrientos"));
+        assertFalse(messages.get(messages.size() - 1).contains("Escribe"));
+        assertFalse(pipeline.artistSelectionMatches("sender", "la de Marco", 1));
+        assertTrue(pipeline.artistSelectionMatches("sender", "la de Barrientos", 1));
+        assertFalse(pipeline.artistSelectionMatches("sender", "la de Barrientos", 2));
+        assertTrue(pipeline.artistSelectionMatches("sender", "la primera que dijiste", 1));
+        var token = pipeline.artistQuestionToken("sender");
+        pipeline.context("sender", List.of("Tema.m4a"));
+        pipeline.repeatArtistQuestion("sender");
+        assertSame(token, pipeline.artistQuestionToken("sender"));
+        pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "artist:1");
+        assertEquals(1, drive.uploads);
+        assertTrue(drive.name.contains("Barrientos"));
+        assertEquals("D", drafts.selectedKey);
+        assertEquals(1, drafts.calls);
+        assertNull(pipeline.artistQuestionToken("sender"));
+    }
+
+    @Test void cancelledArtistChoiceCannotUploadOnLateReply() {
+        drafts.ambiguous = true;
+        pipeline.generarNotas("sender", null);
+        pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "search");
+        pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "original");
+        var old = pipeline.pendingDraftChoice("sender");
+        pipeline.cancelNoteChoice("sender");
+        pipeline.chooseDraft("sender", old, "artist:1");
+        assertEquals(0, drive.uploads);
+        assertNull(pipeline.artistQuestionToken("sender"));
+    }
+
     @Test void declinedSongIsNotOfferedAgainInGeneralRequestButExplicitRequestCanChangeIt() {
         pipeline.generarNotas("sender", null);
         pipeline.chooseDraft("sender", pipeline.pendingDraftChoice("sender"), "decline");
@@ -226,10 +262,17 @@ class SongPipelineDraftTest {
     }
 
     private static class FakeDraft extends ChordDraftService {
-        int calls; boolean fail; String versionUrl, targetKey;
+        int calls; boolean fail, ambiguous; String versionUrl, targetKey, selectedKey;
+        @Override Document createSelected(String song, String url, String key, ArtistChoiceRequired choice, int index) throws Exception {
+            selectedKey = key;
+            return render(song, url, new Draft(choice.options.get(index).reference(), key,
+                    List.of(new Section("Coro", List.of("D", "A"), 1)), choice.sources), "");
+        }
         @Override public boolean available() { return true; }
         @Override Draft research(String song, String url, String target) throws Exception {
             calls++; versionUrl = url; targetKey = target;
+            if (ambiguous) throw new ArtistChoiceRequired(List.of(new ArtistOption("Tema - Marco Barrientos", 1),
+                    new ArtistOption("Tema - Marco Otro", 2)), List.of(new Source("A", "https://a.example/song", "D A"), new Source("B", "https://b.example/song", "D A")));
             if (fail) throw new java.io.IOException("Cuota agotada");
             return new Draft("Tema - Original", "C", List.of(new Section("Coro", List.of("C", "G"), 1)),
                     List.of(new Source("Tema", "https://fuente.example/song", "Key: C. C G")));

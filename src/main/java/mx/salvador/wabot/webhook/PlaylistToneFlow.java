@@ -274,6 +274,7 @@ public class PlaylistToneFlow {
             int selected = previous.selected() == null ? recentSelection(from, songs) : songs.indexOf(previous.selected()) + 1;
             var noteChoice = uploadedIds == null ? pipeline.pendingNoteChoice(from) : null;
             var draftChoice = uploadedIds == null ? pipeline.pendingDraftChoice(from) : null;
+            var artistToken = pipeline.artistQuestionToken(from);
             var names = songs.stream().map(AudioFile::name).toList();
             pipeline.refreshDriveContext(from, names, folder);
             var result = interpreter.interpret(body, names, selected, history(from),
@@ -291,6 +292,13 @@ public class PlaylistToneFlow {
             if (noteChoice != null && pipeline.pendingNoteChoice(from) != noteChoice) return;
             rememberMessage(from, body);
             confirmations.remove(from); // Una correccion invalida la propuesta anterior.
+            if (result.intent().equals("artist_reply")) {
+                if (draftChoice == null || pipeline.pendingDraftChoice(from) != draftChoice) return;
+                if (artistToken == null || pipeline.artistQuestionToken(from) != artistToken) return;
+                if (result.targetKey().equals("ask") || !pipeline.artistSelectionMatches(from, body, Integer.parseInt(result.targetKey()))) pipeline.repeatArtistQuestion(from);
+                else pipeline.chooseDraft(from, draftChoice, "artist:" + result.targetKey());
+                return;
+            }
             if (result.intent().equals("draft_reply")) {
                 if (draftChoice == null || pipeline.pendingDraftChoice(from) != draftChoice) {
                     whatsApp.replyText(from, "No hay una pregunta de notas web vigente. Pideme de nuevo la base que necesitas.");
@@ -303,6 +311,7 @@ public class PlaylistToneFlow {
             if (result.intent().equals("draft_notes")) {
                 if (!pending.remove(from, previous)) return;
                 var song = songs.get(result.song() - 1);
+                pipeline.switchArtistTask(from, song.name());
                 rememberSong(from, song.id());
                 pipeline.requestNoteDraft(from, song.name(), result.targetKey());
                 return;
@@ -404,6 +413,7 @@ public class PlaylistToneFlow {
             }
             if (result.intent().equals("notes")) {
                 if (!pending.remove(from, previous)) return;
+                if (result.song() > 0) pipeline.switchArtistTask(from, songs.get(result.song() - 1).name());
                 pipeline.requestDocuments(from, true, false, result.song() == 0 ? null : songs.get(result.song() - 1).name());
                 return;
             }

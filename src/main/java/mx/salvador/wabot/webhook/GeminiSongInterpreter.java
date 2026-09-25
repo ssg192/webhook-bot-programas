@@ -90,7 +90,7 @@ public class GeminiSongInterpreter {
             throw new IOException("Solicitud fuera de limites");
         }
         var schema = Map.of("type", "OBJECT", "properties", Map.of(
-                "intent", Map.of("type", "STRING", "enum", List.of("draft_reply", "draft_notes", "undo", "tone_batch", "remove_notes", "lyrics_song", "status", "status_notes", "status_lyrics", "note_version", "tone", "tone_notes", "notes", "lyrics", "notes_lyrics", "list", "remove", "cancel", "clarify", "unrelated")),
+                "intent", Map.of("type", "STRING", "enum", List.of("artist_reply", "draft_reply", "draft_notes", "undo", "tone_batch", "remove_notes", "lyrics_song", "status", "status_notes", "status_lyrics", "note_version", "tone", "tone_notes", "notes", "lyrics", "notes_lyrics", "list", "remove", "cancel", "clarify", "unrelated")),
                 "targetKey", Map.of("type", "STRING"),
                 "song", Map.of("type", "INTEGER"),
                 "semitones", Map.of("type", "INTEGER"),
@@ -118,6 +118,16 @@ public class GeminiSongInterpreter {
                 Si falta direccion/cantidad o hay un objetivo ambiguo en el lote entero, devuelve clarify.
                 Interpreta el significado, no busques frases exactas ni palabras clave obligatorias.
                 Si estadoTrabajo.preguntaBaseWeb existe, hay una pregunta de notas WEB, no de tono del audio.
+                Si existe eleccionArtistaWeb, una aclaracion de artista/version esta pendiente. Usa
+                artist_reply con song=0, semitones=0, targetKey=numero de la opcion como string SOLO
+                cuando la referencia sea inequivoca segun opciones y conversacion. Apellido, nombre,
+                ordinal, 'la primera que dijiste' o URL pueden identificarla sin comandos exactos.
+                Si 'Marco' coincide con dos opciones NO elijas una; targetKey=ask. Preguntas sobre
+                opciones, 'ninguna', negaciones ambiguas o referencias a menus anteriores => ask.
+                'la otra' solo selecciona si hay exactamente una alternativa a una referencia clara.
+                No confundas los numeros de este menu con la playlist. Una consulta de estado usa
+                status y conserva la pregunta. Cancelar usa cancel. Cambiar de cancion es otra
+                peticion (notes/draft_notes), no una respuesta a la eleccion actual.
                 decisionesNotasHoy guarda accepted/declined por cancion y carpeta: no interpretes una
                 peticion general de notas como permiso para revocar un rechazo o repetir una busqueda.
                 Si pide expresamente volver a buscar notas de una cancion, usa draft_notes con esa cancion.
@@ -286,6 +296,12 @@ public class GeminiSongInterpreter {
         int semitones = result.path("semitones").intValue();
         String targetKey = result.path("targetKey").asText("");
         if (result.has("targetKey") && !result.path("targetKey").isTextual()) throw new IOException("Tonalidad invalida");
+        if (intent.equals("artist_reply")) {
+            if (song != 0 || semitones != 0 || !targetKey.matches("ask|[1-9]|10")
+                    || (result.has("adjustments") && (!result.path("adjustments").isArray() || !result.path("adjustments").isEmpty())))
+                throw new IOException("Respuesta de artista invalida");
+            return new Interpretation(intent, 0, 0, List.of(), targetKey);
+        }
         if (intent.equals("draft_reply")) {
             if (song != 0 || semitones != 0 || (!List.of("search", "decline", "original").contains(targetKey)
                     && !mx.salvador.wabot.media.ChordTransposer.validKey(targetKey))

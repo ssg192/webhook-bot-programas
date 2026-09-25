@@ -65,6 +65,18 @@ automáticas. Los límites 432/433 del proveedor pausan hasta el mes siguiente, 
 pausa 15 minutos. Al agotarse la cuota se avisa y no se sube un documento vacío.
 
 Cuando falten notas, primero pregunta si se quiere buscar una versión base en internet.
+Si la investigación devuelve varias referencias de artista/versión, no se crea el
+DOCX: se muestran opciones numeradas como información, sin exigir una fórmula de
+respuesta. `eleccionArtistaWeb` conserva orden, referencias, URLs y tono; la IA puede
+resolver apellidos, ordinales y correcciones desde el historial. `artist_reply`
+selecciona una opción inequívoca o vuelve a aclarar. Una mención parcial compartida
+(p. ej. Marco) tiene además una comprobación local para impedir escoger arbitrariamente.
+Las consultas intermedias conservan la selección pendiente; cancelación/caducidad y
+respuestas de IA a un menú reemplazado no pueden crear el archivo. La elección
+reutiliza la página recuperada, sin otra búsqueda, e incluye la referencia en el nombre
+del DOCX. Los menús de artista viven en memoria durante la petición (30 minutos), no
+se restauran tras reiniciar. Las opciones dependen de lo que encuentre la búsqueda;
+no son un catálogo exhaustivo de todos los artistas o versiones existentes.
 Las consultas «cuántas canciones llevamos» muestran el total de la playlist; «cuántas
 tienen notas» incluyen el conteo de notas asociadas verificadas en Drive.
 Antes de interpretar mensajes se listan Notas/ y los documentos de la carpeta de

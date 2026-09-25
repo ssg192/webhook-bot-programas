@@ -55,6 +55,21 @@ public class ChordDraftService {
         Section(String name, List<String> chords, int source) { this(name, chords, source, List.of()); }
     }
     record Draft(String reference, String key, List<Section> sections, List<Source> sources) {}
+    record ArtistOption(String reference, int source) {}
+    static final class ArtistChoiceRequired extends IOException {
+        final List<ArtistOption> options;
+        final List<Source> sources;
+        ArtistChoiceRequired(List<ArtistOption> options, List<Source> sources) {
+            super("Hay varias referencias posibles");
+            this.options = List.copyOf(options); this.sources = List.copyOf(sources);
+        }
+    }
+
+    Document createSelected(String song, String url, String key, ArtistChoiceRequired choice, int index) throws Exception {
+        var option = choice.options.get(index);
+        var source = choice.sources.get(option.source() - 1);
+        return render(song, url, researchSources(song, url, key, List.of(source), option.reference()), "");
+    }
     public record Document(byte[] bytes, String key, boolean transposed) {}
 
     public boolean available() { return enabled && apiKey.filter(key -> !key.isBlank()).isPresent() && gemini != null && gemini.available(); }
@@ -75,9 +90,21 @@ public class ChordDraftService {
         List<Source> sources = search(song + (targetKey.isEmpty() ? " tono original" : " tonalidad " + targetKey));
         LOG.infof("notes-web stage=research song=%s target=%s sources=%d", logText(song), logText(targetKey.isEmpty() ? "original" : targetKey), sources.size());
         if (sources.isEmpty()) throw new IOException("No pude recuperar una pagina de acordes completa. Los resumenes y videos no bastan; comparte una pagina de acordes de la version que buscas");
-        String input = json.writeValueAsString(Map.of("cancionSolicitada", song, "linkVersionSolicitada", versionUrl, "tonoSolicitado", targetKey.isEmpty() ? "original" : targetKey, "fuentes", sources));
+        return researchSources(song, versionUrl, targetKey, sources, "");
+    }
+
+    Draft researchSources(String song, String versionUrl, String targetKey, List<Source> sources, String chosen) throws Exception {
+        String input = json.writeValueAsString(Map.of("cancionSolicitada", song, "linkVersionSolicitada", versionUrl, "tonoSolicitado", targetKey.isEmpty() ? "original" : targetKey, "fuentes", sources, "referenciaElegida", chosen));
         String instructions = """
                 Identifica la cancion solicitada por titulo Y artista/version y prepara una hoja de
+                ensayo SOLO cuando su identidad sea inequivoca. Si las fuentes muestran distintos artistas
+                o versiones y no hay una eleccion inequivoca del usuario, devuelve {"candidates":[
+                {"reference":"titulo - artista - version","source":1}, ...]} SIN sections.
+                Agrupa paginas de una misma referencia: no son opciones distintas solo por ser URLs distintas.
+                No inventes candidatos; cada source debe existir. Un nombre parcial compartido no identifica
+                un artista. No elijas el primer resultado. Si referenciaElegida tiene valor, conserva ESA
+                referencia; si la pagina no corresponde devuelve sections=[] en vez de sustituirla.
+                La URL de un video sin metadatos no prueba quien canta. Con una referencia inequivoca prepara una hoja de
                 ensayo de una sola pagina fuente. 'Original' se refiere al tono, no autoriza cambiar
                 de cancion, artista, traduccion ni arreglo. El link solo identifica la version: no lo has escuchado.
                 Conserva los bloques de letra y acordes juntos, con acordes encima de la linea cantada,
@@ -141,6 +168,21 @@ public class ChordDraftService {
     }
 
     Draft parseResearch(String text, List<Source> sources) throws IOException {
+        String payload = text.strip().replaceFirst("^```(?:json)?\\s*", "").replaceFirst("\\s*```$", "");
+        var node = json.readTree(payload);
+        if (node != null && node.path("candidates").isArray() && !node.path("candidates").isEmpty()) {
+            var options = new ArrayList<ArtistOption>();
+            for (var item : node.path("candidates")) {
+                String reference = item.path("reference").asText("").strip();
+                int source = sourceIndex(item.path("source"), sources);
+                if (reference.isBlank() || reference.length() > 240 || source == 0)
+                    throw new IOException("No pude identificar las opciones; necesito el artista o la pagina exacta");
+                var option = new ArtistOption(reference, source);
+                if (!options.contains(option)) options.add(option);
+                if (options.size() > 10) throw new IOException("Hay demasiadas coincidencias; necesito el artista o la version");
+            }
+            throw new ArtistChoiceRequired(options, sources);
+        }
         return parse(text, sources);
     }
 
